@@ -1,6 +1,9 @@
 # Modern Notepad - Python Dependencies
 # Python 3.6+ required for tkinter and ttk support
 
-# Required packages:
+# Required packages for running the application:
 Pillow>=8.0.0
 openpyxl>=3.0.0
+
+# Required for building standalone executable:
+pyinstaller>=4.0

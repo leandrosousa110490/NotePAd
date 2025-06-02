@@ -2,6 +2,16 @@
 
 A powerful, multi-mode text editor built with Python and Tkinter that combines the simplicity of a notepad with advanced features like code editing and spreadsheet functionality.
 
+## Quick Start
+
+### Running from Source
+1. Install Python 3.6 or higher
+2. Install dependencies: `pip install -r requirements.txt`
+3. Run the application: `python notepad.py`
+
+### Building Standalone Executable
+Want to create an executable that runs without Python? See our detailed [BUILD_GUIDE.md](BUILD_GUIDE.md) for step-by-step instructions using PyInstaller.
+
 ## Features
 
 ### Core Features
