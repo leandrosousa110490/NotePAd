@@ -1,1896 +1,2282 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, font
+import sys
 import os
-from PIL import Image, ImageTk, ImageGrab
-import io
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QFileDialog, 
+                             QMessageBox, QFontDialog, QColorDialog, QVBoxLayout, 
+                             QWidget, QMenuBar, QMenu, QToolBar, QStatusBar,
+                             QInputDialog, QDialog, QDialogButtonBox, QSpinBox, 
+                             QLabel, QHBoxLayout, QCheckBox, QLineEdit, QPushButton,
+                             QTabWidget, QPlainTextEdit, QComboBox, QSlider, QSplitter)
+from PyQt6.QtGui import (QAction, QFont, QTextCursor, QTextCharFormat, 
+                         QColor, QKeySequence, QTextTableFormat, QTextImageFormat,
+                         QTextListFormat, QImage, QTextFrameFormat, QSyntaxHighlighter,
+                         QTextDocument, QPalette, QTextBlockFormat, QTextLength,
+                         QTextTableCellFormat, QPainter, QTextFormat)
+from PyQt6.QtCore import Qt, QSettings, QRegularExpression, QTimer, QDateTime, QRect, QSize, QProcess, QEvent
+from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 import re
+import subprocess
+import tempfile
+import json
+import shutil
+import uuid
+try:
+    import duckdb
+except Exception:
+    duckdb = None
+try:
+    import polars as pl
+except Exception:
+    pl = None
+try:
+    from PyPDF2 import PdfReader
+except Exception:
+    PdfReader = None
 
-class ModernNotepad:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("Modern Notepad")
-        self.root.geometry("800x600")
-        self.root.minsize(600, 400)
-        
-        # Theme variables
-        self.current_theme = "dark"  # dark, light, system
-        self.themes = {
-            "dark": {
-                "bg": "#2b2b2b",
-                "header_bg": "#1e1e1e",
-                "text_bg": "#1e1e1e",
-                "text_fg": "#ffffff",
-                "select_bg": "#0078d4",
-                "status_fg": "#cccccc"
-            },
-            "light": {
-                "bg": "#f0f0f0",
-                "header_bg": "#e0e0e0",
-                "text_bg": "#ffffff",
-                "text_fg": "#000000",
-                "select_bg": "#0078d4",
-                "status_fg": "#333333"
-            }
-        }
-        # Initialize system theme
-        self.themes["system"] = self.get_system_theme()
-        
-        # Configure style
-        self.setup_styles()
-        
-        # Variables
-        self.current_file = None
-        self.is_always_on_top = False
-        self.text_modified = False
-        self.is_code_mode = False
-        self.line_numbers_frame = None
-        self.line_numbers_canvas = None
-        self.current_language = "Python"
-        
-        # Supported programming languages
-        self.languages = [
-            "Python", "JavaScript", "HTML", "CSS", "Java", "C++", "C#", 
-            "PHP", "Ruby", "Go", "Swift", "TypeScript", "SQL", "Rust", 
-            "Kotlin", "Bash", "PowerShell", "XML", "JSON", "YAML"
-        ]
-        
-        # Create UI
-        self.create_header()
-        self.create_text_area()
-        self.create_status_bar()
-        
-        # Initialize formatting state tracking
-        self.current_formatting = {
-            'bold': False,
-            'italic': False,
-            'underline': False,
-            'size': 12,
-            'color': None,
-            'highlight': None
-        }
-        
-        # Bind events
-        self.bind_events()
-        
-        # Set initial focus
-        self.text_area.focus_set()
-    
-    def get_system_theme(self):
-        """Detect system theme (Windows)"""
-        try:
-            import winreg
-            registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
-            key = winreg.OpenKey(registry, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-            winreg.CloseKey(key)
-            
-            if value == 0:  # Dark theme
-                return {
-                    "bg": "#2b2b2b", "header_bg": "#1e1e1e", "text_bg": "#1e1e1e",
-                    "text_fg": "#ffffff", "select_bg": "#0078d4", "status_fg": "#cccccc"
-                }
-            else:  # Light theme
-                return {
-                    "bg": "#f0f0f0", "header_bg": "#e0e0e0", "text_bg": "#ffffff",
-                    "text_fg": "#000000", "select_bg": "#0078d4", "status_fg": "#333333"
-                }
-        except:
-            # Default to dark theme if detection fails
-            return {
-                "bg": "#2b2b2b", "header_bg": "#1e1e1e", "text_bg": "#1e1e1e",
-                "text_fg": "#ffffff", "select_bg": "#0078d4", "status_fg": "#cccccc"
-            }
-    
-    def setup_styles(self):
-        """Configure modern styling based on current theme"""
-        theme = self.themes[self.current_theme]
-        self.root.configure(bg=theme["bg"])
-        
-        # Configure ttk styles
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Header style
-        style.configure('Header.TFrame', background=theme["header_bg"])
-        
-        # Determine button colors based on theme
-        if self.current_theme == "light":
-            button_bg = "#d0d0d0"
-            button_active = "#c0c0c0"
-            button_pressed = "#b0b0b0"
-            text_color = "black"
-        else:
-            button_bg = "#404040"
-            button_active = "#505050"
-            button_pressed = "#606060"
-            text_color = "white"
-        
-        style.configure('Header.TButton', 
-                       background=button_bg,
-                       foreground=text_color,
-                       borderwidth=0,
-                       focuscolor='none')
-        style.map('Header.TButton',
-                 background=[('active', button_active),
-                           ('pressed', button_pressed)])
-        
-        # Header label style
-        style.configure('Header.TLabel',
-                      background=theme["header_bg"],
-                      foreground=text_color)
-        
-        # Always on top button style
-        style.configure('OnTop.TButton',
-                       background='#0078d4',
-                       foreground='white',
-                       borderwidth=0,
-                       focuscolor='none')
-        style.map('OnTop.TButton',
-                 background=[('active', '#106ebe'),
-                           ('pressed', '#005a9e')])
-        
-        # Active formatting button style
-        style.configure('Active.TButton',
-                       background='#0078d4',
-                       foreground='white',
-                       borderwidth=0,
-                       focuscolor='none')
-        style.map('Active.TButton',
-                 background=[('active', '#106ebe'),
-                           ('pressed', '#005a9e')])
-        
-        # Status bar style
-        style.configure('Status.TLabel',
-                       background=theme["header_bg"],
-                       foreground=theme["status_fg"],
-                       padding=(10, 5))
-        
-        # Combobox style
-        combo_bg = "#333333" if self.current_theme != "light" else "#ffffff"
-        combo_field_bg = "#333333" if self.current_theme != "light" else "#f0f0f0"
-        
-        style.configure('TCombobox',
-                      fieldbackground=combo_field_bg,
-                      background=combo_bg,
-                      foreground=text_color,
-                      arrowcolor=text_color,
-                      selectbackground='#0078d4',
-                      selectforeground='white')
-        style.map('TCombobox',
-                fieldbackground=[('readonly', combo_field_bg)],
-                selectbackground=[('readonly', '#0078d4')],
-                selectforeground=[('readonly', 'white')])
-    
-    def create_header(self):
-        """Create the header with menu bar"""
-        self.header_frame = ttk.Frame(self.root, style='Header.TFrame')
-        self.header_frame.pack(fill='x', padx=0, pady=0)
-        
-        # Create menu bar
-        self.create_menu_bar()
-        
-        # Right side - Always on top button
-        right_frame = ttk.Frame(self.header_frame, style='Header.TFrame')
-        right_frame.pack(side='right', padx=10, pady=8)
-        
-        # Language selector (initially hidden, shown in code mode)
-        self.language_frame = ttk.Frame(right_frame, style='Header.TFrame')
-        self.language_frame.pack(side='left', padx=(0, 10), pady=0)
-        
-        self.language_label = ttk.Label(self.language_frame, text="Language:", 
-                                      style='Header.TLabel', foreground='white')
-        self.language_label.pack(side='left', padx=(0, 5))
-        
-        self.language_var = tk.StringVar(value="Python")
-        self.language_dropdown = ttk.Combobox(self.language_frame, 
-                                           textvariable=self.language_var,
-                                           values=self.languages,
-                                           width=12,
-                                           state="readonly")
-        self.language_dropdown.pack(side='left')
-        self.language_dropdown.bind("<<ComboboxSelected>>", self.on_language_change)
-        
-        # Hide language selector initially (shown only in code mode)
-        self.language_frame.pack_forget()
-        
-        # Text formatting toolbar (shown only in normal mode)
-        self.formatting_frame = ttk.Frame(right_frame, style='Header.TFrame')
-        self.formatting_frame.pack(side='left', padx=(0, 10), pady=0)
-        
-        # Font style buttons
-        self.bold_button = ttk.Button(self.formatting_frame, text="B", width=3,
-                                    command=self.toggle_bold, style='Header.TButton')
-        self.bold_button.pack(side='left', padx=1)
-        
-        self.italic_button = ttk.Button(self.formatting_frame, text="I", width=3,
-                                      command=self.toggle_italic, style='Header.TButton')
-        self.italic_button.pack(side='left', padx=1)
-        
-        self.underline_button = ttk.Button(self.formatting_frame, text="U", width=3,
-                                         command=self.toggle_underline, style='Header.TButton')
-        self.underline_button.pack(side='left', padx=1)
-        
-        # Font size selector
-        self.size_var = tk.StringVar(value="12")
-        self.size_dropdown = ttk.Combobox(self.formatting_frame,
-                                        textvariable=self.size_var,
-                                        values=["8", "9", "10", "11", "12", "14", "16", "18", "20", "24", "28", "32"],
-                                        width=4, state="readonly")
-        self.size_dropdown.pack(side='left', padx=2)
-        self.size_dropdown.bind("<<ComboboxSelected>>", self.change_font_size)
-        
-        # Text color button
-        self.text_color_button = ttk.Button(self.formatting_frame, text="A", width=3,
-                                          command=self.change_text_color, style='Header.TButton')
-        self.text_color_button.pack(side='left', padx=1)
-        
-        # Highlight color button
-        self.highlight_button = ttk.Button(self.formatting_frame, text="🖍", width=3,
-                                         command=self.change_highlight_color, style='Header.TButton')
-        self.highlight_button.pack(side='left', padx=1)
-        
-        # Show formatting toolbar initially (hidden in code mode)
-        # Will be managed by mode switching functions
-        
-        # Always on top button
-        self.on_top_button = ttk.Button(right_frame, text="📌 Stay on Top", 
-                                       command=self.toggle_always_on_top,
-                                       style='Header.TButton')
-        self.on_top_button.pack(side='right')
-        
-        # Add a separator below header
-        self.header_separator = ttk.Separator(self.root, orient='horizontal')
-        self.header_separator.pack(fill='x', pady=(0, 1))
-    
-    def create_menu_bar(self):
-        """Create menu bar with File menu"""
-        menubar = tk.Menu(self.root, bg='#1e1e1e', fg='white', 
-                         activebackground='#404040', activeforeground='white',
-                         borderwidth=0)
-        self.root.config(menu=menubar)
-        
-        # Get theme colors for menus
-        theme = self.themes[self.current_theme]
-        menu_bg = theme["header_bg"]
-        menu_fg = "black" if self.current_theme == "light" else "white"
-        
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0, bg=menu_bg, fg=menu_fg,
-                           activebackground='#0078d4', activeforeground='white',
-                           borderwidth=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        
-        file_menu.add_command(label="New                    Ctrl+N", command=self.new_file)
-        file_menu.add_command(label="Open                   Ctrl+O", command=self.open_file)
-        file_menu.add_separator()
-        file_menu.add_command(label="Save                   Ctrl+S", command=self.save_file)
-        file_menu.add_command(label="Save As          Ctrl+Shift+S", command=self.save_as_file)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.on_closing)
-        
-        # Edit menu
-        edit_menu = tk.Menu(menubar, tearoff=0, bg=menu_bg, fg=menu_fg,
-                           activebackground='#0078d4', activeforeground='white',
-                           borderwidth=0)
-        menubar.add_cascade(label="Edit", menu=edit_menu)
-        
-        edit_menu.add_command(label="Copy                   Ctrl+C", command=self.copy_text)
-        edit_menu.add_command(label="Paste                  Ctrl+V", command=self.paste_content)
-        edit_menu.add_command(label="Cut                    Ctrl+X", command=self.cut_text)
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Select All             Ctrl+A", command=self.select_all)
-        
-        # View menu
-        theme = self.themes[self.current_theme]
-        menu_bg = theme["header_bg"]
-        menu_fg = "black" if self.current_theme == "light" else "white"
-        
-        view_menu = tk.Menu(menubar, tearoff=0, bg=menu_bg, fg=menu_fg,
-                           activebackground='#0078d4', activeforeground='white',
-                           borderwidth=0)
-        menubar.add_cascade(label="View", menu=view_menu)
-        
-        view_menu.add_command(label="Normal Mode", command=self.switch_to_normal_mode)
-        view_menu.add_command(label="Code Mode", command=self.switch_to_code_mode)
-        view_menu.add_command(label="Spreadsheet Mode", command=self.switch_to_spreadsheet_mode)
-        view_menu.add_separator()
-        
-        # Theme submenu
-        theme_menu = tk.Menu(view_menu, tearoff=0, bg=menu_bg, fg=menu_fg,
-                            activebackground='#0078d4', activeforeground='white',
-                            borderwidth=0)
-        view_menu.add_cascade(label="Theme", menu=theme_menu)
-        
-        theme_menu.add_command(label="Dark Theme", command=lambda: self.change_theme("dark"))
-        theme_menu.add_command(label="Light Theme", command=lambda: self.change_theme("light"))
-        theme_menu.add_command(label="System Theme", command=lambda: self.change_theme("system"))
-    
-    def create_text_area(self):
-        """Create the main text editing area"""
-        # Frame for text area and scrollbar
-        theme = self.themes[self.current_theme]
-        text_frame = tk.Frame(self.root, bg=theme["bg"])
-        text_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-        
-        # Create main text container
-        self.text_container = tk.Frame(text_frame, bg=theme["bg"])
-        self.text_container.pack(fill='both', expand=True)
-        
-        # Text widget with theme-based styling
-        theme = self.themes[self.current_theme]
-        self.text_area = tk.Text(self.text_container,
-                                bg=theme["text_bg"],
-                                fg=theme["text_fg"],
-                                insertbackground=theme["text_fg"],
-                                selectbackground=theme["select_bg"],
-                                selectforeground='#ffffff',
-                                font=('Consolas', 11),
-                                wrap='word',
-                                undo=True,
-                                maxundo=50,
-                                borderwidth=0,
-                                highlightthickness=0,
-                                padx=15,
-                                pady=15)
-        
-        # Create context menu for right-click
-        self.create_context_menu()
-        
-        # Apply theme to text area
-        self.apply_theme_to_text_area()
-        
-        # Scrollbar
-        self.scrollbar = ttk.Scrollbar(self.text_container, orient='vertical', command=self.text_area.yview)
-        self.text_area.configure(yscrollcommand=self.scrollbar.set)
-        
-        # Pack text area and scrollbar
-        self.text_area.pack(side='left', fill='both', expand=True)
-        self.scrollbar.pack(side='right', fill='y')
-        
-        # Configure syntax highlighting tags
-        self.setup_syntax_highlighting()
-    
-    def create_status_bar(self):
-        """Create status bar"""
-        self.status_bar = ttk.Label(self.root, text="Ready", style='Status.TLabel')
-        self.status_bar.pack(fill='x', side='bottom')
-    
-    def bind_events(self):
-        """Bind keyboard shortcuts and events"""
-        # File operations shortcuts
-        self.root.bind('<Control-n>', lambda e: self.new_file())
-        self.root.bind('<Control-o>', lambda e: self.open_file())
-        self.root.bind('<Control-s>', lambda e: self.save_file())
-        self.root.bind('<Control-Shift-S>', lambda e: self.save_as_file())
-        
-        # Edit shortcuts
-        self.root.bind('<Control-c>', lambda e: self.copy_text())
-        self.root.bind('<Control-v>', lambda e: self.paste_content())
-        self.root.bind('<Control-x>', lambda e: self.cut_text())
-        self.root.bind('<Control-a>', lambda e: self.select_all())
-        
-        # Text modification tracking
-        self.text_area.bind('<KeyPress>', self.on_text_change)
-        self.text_area.bind('<Button-1>', self.update_status)
-        self.text_area.bind('<KeyRelease>', self.update_status)
-        
-        # Formatting inheritance for new text
-        self.text_area.bind('<KeyPress>', self.on_key_press_format, add='+')
-        self.text_area.bind('<Button-1>', self.update_current_formatting, add='+')
-        self.text_area.bind('<KeyRelease>', self.update_current_formatting, add='+')
-        
-        # Text replacement when typing over selection
-        self.text_area.bind('<Key>', self.handle_text_replacement, add='+')
-        self.text_area.bind('<BackSpace>', self.handle_backspace, add='+')
-        self.text_area.bind('<Delete>', self.handle_delete, add='+')
-        
-        # Code mode specific bindings
-        self.text_area.bind('<KeyRelease>', self.on_key_release)
-        self.text_area.bind('<Button-1>', self.on_click)
-        
-        # Right-click context menu
-        self.text_area.bind('<Button-3>', self.show_context_menu)
-        
-        # Window close event
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-    
-    def toggle_always_on_top(self):
-        """Toggle the always on top functionality"""
-        self.is_always_on_top = not self.is_always_on_top
-        self.root.attributes('-topmost', self.is_always_on_top)
-        
-        if self.is_always_on_top:
-            self.on_top_button.configure(text="📌 On Top", style='OnTop.TButton')
-            self.status_bar.configure(text="Window is now always on top")
-        else:
-            self.on_top_button.configure(text="📌 Stay on Top", style='Header.TButton')
-            self.status_bar.configure(text="Window is no longer always on top")
-    
-    def new_file(self):
-        """Create a new file"""
-        if self.check_unsaved_changes():
-            self.text_area.delete(1.0, tk.END)
-            self.current_file = None
-            self.text_modified = False
-            self.update_title()
-            self.status_bar.configure(text="New file created")
-    
-    def open_file(self):
-        """Open an existing file"""
-        if self.check_unsaved_changes():
-            file_path = filedialog.askopenfilename(
-                title="Open File",
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-            )
-            if file_path:
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as file:
-                        content = file.read()
-                        self.text_area.delete(1.0, tk.END)
-                        self.text_area.insert(1.0, content)
-                        self.current_file = file_path
-                        self.text_modified = False
-                        self.update_title()
-                        self.status_bar.configure(text=f"Opened: {os.path.basename(file_path)}")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Could not open file: {str(e)}")
-    
-    def save_file(self):
-        """Save the current file"""
-        if self.current_file:
-            try:
-                content = self.text_area.get(1.0, tk.END + '-1c')
-                with open(self.current_file, 'w', encoding='utf-8') as file:
-                    file.write(content)
-                self.text_modified = False
-                self.update_title()
-                self.status_bar.configure(text=f"Saved: {os.path.basename(self.current_file)}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not save file: {str(e)}")
-        else:
-            self.save_as_file()
-    
-    def save_as_file(self):
-        """Save the file with a new name"""
-        # Check if we're in spreadsheet mode
-        is_spreadsheet_mode = hasattr(self, 'spreadsheet_frame') and self.spreadsheet_frame.winfo_ismapped()
-        
-        if is_spreadsheet_mode:
-            # Spreadsheet mode - save as Excel file
-            default_ext = ".xlsx"
-            filetypes = [("Excel files", "*.xlsx"), ("CSV files", "*.csv"), ("All files", "*.*")]
-            
-            file_path = filedialog.asksaveasfilename(
-                title="Save Spreadsheet As",
-                defaultextension=default_ext,
-                filetypes=filetypes
-            )
-            
-            if file_path:
-                try:
-                    self.save_spreadsheet_data(file_path)
-                    self.current_file = file_path
-                    self.text_modified = False
-                    self.update_title()
-                    self.status_bar.configure(text=f"Saved as: {os.path.basename(file_path)}")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Could not save spreadsheet: {str(e)}")
-        else:
-            # Text/Code mode - save as text file
-            # Determine default extension based on selected language
-            default_ext = ".txt"
-            filetypes = [("Text files", "*.txt")]
-            
-            if self.is_code_mode:
-                # Map languages to their file extensions
-                lang_extensions = {
-                    "Python": ".py",
-                    "JavaScript": ".js",
-                    "HTML": ".html",
-                    "CSS": ".css",
-                    "Java": ".java",
-                    "C++": ".cpp",
-                    "C#": ".cs",
-                    "PHP": ".php",
-                    "Ruby": ".rb",
-                    "Go": ".go",
-                    "Swift": ".swift",
-                    "TypeScript": ".ts",
-                    "SQL": ".sql",
-                    "Rust": ".rs",
-                    "Kotlin": ".kt",
-                    "Bash": ".sh",
-                    "PowerShell": ".ps1",
-                    "XML": ".xml",
-                    "JSON": ".json",
-                    "YAML": ".yml"
-                }
-                
-                # Set default extension based on current language
-                if self.current_language in lang_extensions:
-                    default_ext = lang_extensions[self.current_language]
-                    filetypes.insert(0, (f"{self.current_language} files", f"*{default_ext}"))
-            
-            # Add all files option
-            filetypes.append(("All files", "*.*"))
-            
-            file_path = filedialog.asksaveasfilename(
-                title="Save As",
-                defaultextension=default_ext,
-                filetypes=filetypes
-            )
-            
-            if file_path:
-                try:
-                    content = self.text_area.get(1.0, tk.END + '-1c')
-                    with open(file_path, 'w', encoding='utf-8') as file:
-                        file.write(content)
-                    self.current_file = file_path
-                    self.text_modified = False
-                    self.update_title()
-                    self.status_bar.configure(text=f"Saved as: {os.path.basename(file_path)}")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Could not save file: {str(e)}")
-    
-    def save_spreadsheet_data(self, file_path):
-        """Save spreadsheet data to Excel or CSV format"""
-        import csv
-        
-        # Determine file format based on extension
-        file_ext = os.path.splitext(file_path)[1].lower()
-        
-        if file_ext == '.csv':
-            # Save as CSV
-            with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.writer(csvfile)
-                
-                # Write data row by row
-                for row in range(1, self.max_rows):
-                    row_data = []
-                    for col in range(1, self.max_cols):
-                        cell_id = f"{chr(64 + col)}{row}"
-                        if cell_id in self.cells:
-                            cell_value = self.cells[cell_id].get()
-                            row_data.append(cell_value)
-                        else:
-                            row_data.append("")
-                    
-                    # Only write rows that have some data
-                    if any(cell.strip() for cell in row_data):
-                        writer.writerow(row_data)
-        
-        elif file_ext == '.xlsx':
-            # Save as Excel - try to use openpyxl if available
-            try:
-                import openpyxl
-                from openpyxl import Workbook
-                
-                wb = Workbook()
-                ws = wb.active
-                ws.title = "Sheet1"
-                
-                # Write column headers
-                for col in range(1, self.max_cols):
-                    col_letter = chr(64 + col)
-                    ws.cell(row=1, column=col, value=col_letter)
-                
-                # Write data
-                for row in range(1, self.max_rows):
-                    for col in range(1, self.max_cols):
-                        cell_id = f"{chr(64 + col)}{row}"
-                        if cell_id in self.cells:
-                            cell_value = self.cells[cell_id].get()
-                            if cell_value.strip():  # Only write non-empty cells
-                                ws.cell(row=row+1, column=col, value=cell_value)
-                
-                wb.save(file_path)
-                
-            except ImportError:
-                # Fallback to CSV if openpyxl is not available
-                messagebox.showwarning("Excel Support", 
-                    "Excel format requires 'openpyxl' library. Saving as CSV instead.\n"
-                    "To install: pip install openpyxl")
-                csv_path = os.path.splitext(file_path)[0] + '.csv'
-                self.save_spreadsheet_data(csv_path)
-                return
-        
-        else:
-            # Unsupported format, save as CSV
-            csv_path = os.path.splitext(file_path)[0] + '.csv'
-            self.save_spreadsheet_data(csv_path)
-    
-    def on_text_change(self, event=None):
-        """Handle text changes"""
-        if not self.text_modified:
-            self.text_modified = True
-            self.update_title()
-    
-    def update_status(self, event=None):
-        """Update status bar with cursor position"""
-        cursor_pos = self.text_area.index(tk.INSERT)
-        line, col = cursor_pos.split('.')
-        total_lines = self.text_area.index(tk.END + '-1c').split('.')[0]
-        self.status_bar.configure(text=f"Line {line}, Column {int(col)+1} | Total Lines: {total_lines}")
-    
-    def update_title(self):
-        """Update window title"""
-        title = "Modern Notepad"
-        if self.current_file:
-            filename = os.path.basename(self.current_file)
-            title = f"{filename} - Modern Notepad"
-        if self.text_modified:
-            title = f"*{title}"
-        self.root.title(title)
-    
-    def check_unsaved_changes(self):
-        """Check for unsaved changes and prompt user"""
-        if self.text_modified:
-            response = messagebox.askyesnocancel(
-                "Unsaved Changes",
-                "You have unsaved changes. Do you want to save before continuing?"
-            )
-            if response is True:  # Yes, save
-                self.save_file()
-                return True
-            elif response is False:  # No, don't save
-                return True
-            else:  # Cancel
-                return False
-        return True
-    
-    def create_context_menu(self):
-        """Create right-click context menu"""
-        theme = self.themes[self.current_theme]
-        menu_bg = theme["header_bg"]
-        menu_fg = "black" if self.current_theme == "light" else "white"
-        
-        self.context_menu = tk.Menu(self.root, tearoff=0, bg=menu_bg, fg=menu_fg,
-                                   activebackground='#0078d4', activeforeground='white',
-                                   borderwidth=0)
-        self.context_menu.add_command(label="Copy", command=self.copy_text)
-        self.context_menu.add_command(label="Paste", command=self.paste_content)
-        self.context_menu.add_command(label="Cut", command=self.cut_text)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Select All", command=self.select_all)
-    
-    def show_context_menu(self, event):
-        """Show context menu on right-click"""
-        try:
-            self.context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.context_menu.grab_release()
-    
-    def copy_text(self):
-        """Copy selected text to clipboard"""
-        try:
-            selected_text = self.text_area.selection_get()
-            self.root.clipboard_clear()
-            self.root.clipboard_append(selected_text)
-            self.status_bar.configure(text="Text copied to clipboard")
-        except tk.TclError:
-            self.status_bar.configure(text="No text selected")
-    
-    def cut_text(self):
-        """Cut selected text to clipboard"""
-        try:
-            selected_text = self.text_area.selection_get()
-            self.root.clipboard_clear()
-            self.root.clipboard_append(selected_text)
-            self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
-            self.on_text_change()
-            self.status_bar.configure(text="Text cut to clipboard")
-        except tk.TclError:
-            self.status_bar.configure(text="No text selected")
-    
-    def paste_content(self):
-        """Paste content from clipboard (text or image)"""
-        try:
-            # Try to get image from clipboard first
-            try:
-                image = ImageGrab.grabclipboard()
-                if image:
-                    self.paste_image(image)
-                    return
-            except:
-                pass
-            
-            # If no image, try to get text
-            clipboard_text = self.root.clipboard_get()
-            if clipboard_text:
-                # Insert at cursor position
-                cursor_pos = self.text_area.index(tk.INSERT)
-                self.text_area.insert(cursor_pos, clipboard_text)
-                self.on_text_change()
-                self.status_bar.configure(text="Text pasted from clipboard")
-        except tk.TclError:
-            self.status_bar.configure(text="Nothing to paste")
-    
-    def paste_image(self, image):
-        """Paste image into text area"""
-        try:
-            # Resize image if too large
-            max_width, max_height = 400, 300
-            if image.width > max_width or image.height > max_height:
-                image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-            
-            # Convert to PhotoImage
-            photo = ImageTk.PhotoImage(image)
-            
-            # Get cursor position and ensure proper text positioning
-            cursor_pos = self.text_area.index(tk.INSERT)
-            
-            # Check if we're at the beginning of a line, if not, add newline before image
-            line_start = cursor_pos.split('.')[0] + '.0'
-            if cursor_pos != line_start and self.text_area.get(line_start, cursor_pos).strip():
-                self.text_area.insert(cursor_pos, '\n')
-                cursor_pos = self.text_area.index(tk.INSERT)
-            
-            # Insert image at cursor position with baseline alignment to fix text positioning
-            image_name = self.text_area.image_create(cursor_pos, image=photo, align='baseline')
-            
-            # Move cursor to end of current line and add newline to ensure text goes below image
-            current_line = cursor_pos.split('.')[0]
-            line_end = f"{current_line}.end"
-            self.text_area.mark_set(tk.INSERT, line_end)
-            self.text_area.insert(tk.INSERT, '\n')
-            
-            # Make image selectable by creating a tag around it
-            image_start = cursor_pos
-            image_end = self.text_area.index(f"{cursor_pos}+1c")
-            image_tag = f"image_{len(getattr(self, 'images', []))}"
-            self.text_area.tag_add(image_tag, image_start, image_end)
-            
-            # Configure image tag to be selectable
-            self.text_area.tag_configure(image_tag, 
-                                       selectbackground=self.themes[self.current_theme]["select_bg"],
-                                       selectforeground='white')
-            
-            # Keep a reference to prevent garbage collection
-            if not hasattr(self, 'images'):
-                self.images = []
-            self.images.append(photo)
-            
-            # Add highlighting around the image in normal mode
-            if not self.is_code_mode:
-                self.highlight_pasted_image(image_start, image_name)
-            
-            self.on_text_change()
-            self.status_bar.configure(text="Image pasted from clipboard")
-        except Exception as e:
-            self.status_bar.configure(text=f"Error pasting image: {str(e)}")
-    
-    def select_all(self):
-        """Select all text"""
-        self.text_area.tag_add(tk.SEL, "1.0", tk.END)
-        self.text_area.mark_set(tk.INSERT, "1.0")
-        self.text_area.see(tk.INSERT)
-        self.status_bar.configure(text="All text selected")
-    
-    def setup_syntax_highlighting(self):
-        """Setup syntax highlighting tags for code mode"""
-        # Adjust colors based on theme
-        if self.current_theme == "light":
-            keyword_color = "#0000ff"
-            string_color = "#008000"
-            comment_color = "#808080"
-            number_color = "#ff0000"
-            function_color = "#800080"
-        else:
-            keyword_color = "#569cd6"
-            string_color = "#ce9178"
-            comment_color = "#6a9955"
-            number_color = "#b5cea8"
-            function_color = "#dcdcaa"
+
+class PythonHighlighter(QSyntaxHighlighter):
+    def __init__(self, document):
+        super().__init__(document)
+        self.highlighting_rules = []
         
         # Keywords
-        self.text_area.tag_configure("keyword", foreground=keyword_color)
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(QColor("#CC7832"))
+        keyword_format.setFontWeight(QFont.Weight.Bold)
+        keywords = [
+            "and", "as", "assert", "break", "class", "continue", "def",
+            "del", "elif", "else", "except", "False", "finally", "for",
+            "from", "global", "if", "import", "in", "is", "lambda", "None",
+            "nonlocal", "not", "or", "pass", "raise", "return", "True",
+            "try", "while", "with", "yield"
+        ]
+        for word in keywords:
+            pattern = QRegularExpression(f"\\b{word}\\b")
+            self.highlighting_rules.append((pattern, keyword_format))
+        
         # Strings
-        self.text_area.tag_configure("string", foreground=string_color)
+        string_format = QTextCharFormat()
+        string_format.setForeground(QColor("#6A8759"))
+        self.highlighting_rules.append((QRegularExpression('"[^"]*"'), string_format))
+        self.highlighting_rules.append((QRegularExpression("'[^']*'"), string_format))
+        
         # Comments
-        self.text_area.tag_configure("comment", foreground=comment_color)
-        # Numbers
-        self.text_area.tag_configure("number", foreground=number_color)
-        # Functions
-        self.text_area.tag_configure("function", foreground=function_color)
-        # Line numbers
-        self.text_area.tag_configure("line_number", foreground="#858585")
-        # Image highlight tag for normal mode
-        self.text_area.tag_configure("image_highlight", background="#0078d4", 
-                                   relief="solid", borderwidth=2)
-    
-    def highlight_pasted_image(self, cursor_pos, image_name):
-        """Add visual highlighting around pasted image in normal mode"""
-        try:
-            # Create a tag around the image position
-            end_pos = f"{cursor_pos}+1c"
-            tag_name = f"img_highlight_{len(self.images)}"
-            
-            # Use theme-appropriate highlight color
-            highlight_color = "#0078d4"  # Blue for all themes
-            border_color = "#ffffff" if self.current_theme != "light" else "#000000"
-            
-            # Configure the highlight tag
-            self.text_area.tag_configure(tag_name, background=highlight_color, 
-                                       relief="solid", borderwidth=2,
-                                       foreground=border_color,
-                                       bgstipple="gray25")
-            
-            # Apply the tag to the image position
-            self.text_area.tag_add(tag_name, cursor_pos, end_pos)
-            
-            # Store the tag name for potential removal later
-            if not hasattr(self, 'image_tags'):
-                self.image_tags = []
-            self.image_tags.append(tag_name)
-            
-            # Auto-remove highlight after 3 seconds to show it was selected
-            self.root.after(3000, lambda: self.remove_image_highlight(tag_name))
-            
-        except Exception as e:
-            print(f"Error highlighting image: {e}")
-    
-    def remove_image_highlight(self, tag_name):
-        """Remove image highlight after delay"""
-        try:
-            self.text_area.tag_delete(tag_name)
-            if hasattr(self, 'image_tags') and tag_name in self.image_tags:
-                self.image_tags.remove(tag_name)
-        except Exception as e:
-            print(f"Error removing image highlight: {e}")
-    
-    def switch_to_code_mode(self):
-        """Switch to code editor mode"""
-        # Handle switching from spreadsheet mode
-        if hasattr(self, 'spreadsheet_frame') and self.spreadsheet_frame.winfo_ismapped():
-            self.spreadsheet_frame.pack_forget()
-            # Clear spreadsheet data
-            if hasattr(self, 'cells'):
-                for cell_id, entry in self.cells.items():
-                    entry.delete(0, tk.END)
-            # Show text area and scrollbar
-            self.text_area.pack(side='left', fill='both', expand=True)
-            self.scrollbar.pack(side='right', fill='y')
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(QColor("#808080"))
+        comment_format.setFontItalic(True)
+        self.highlighting_rules.append((QRegularExpression("#[^\n]*"), comment_format))
         
-        if not self.is_code_mode:
-            self.is_code_mode = True
-            self.text_area.configure(wrap='none', padx=5)
-            
-            # Make sure text area is packed before adding line numbers
-            if not self.text_area.winfo_ismapped():
-                self.text_area.pack(side='left', fill='both', expand=True)
-                self.scrollbar.pack(side='right', fill='y')
-            
-            # Create line numbers after text area is packed
-            self.create_line_numbers()
-            
-            # Show language selector and hide formatting toolbar
-            self.language_frame.pack(side='left', padx=(0, 10), pady=0)
-            self.formatting_frame.pack_forget()
-            
-            # Apply syntax highlighting based on selected language
-            self.apply_syntax_highlighting()
-            self.status_bar.configure(text=f"Switched to Code Mode - {self.current_language}")
-            self.root.title(f"Code ({self.current_language}) - Modern Notepad")
-    
-    def switch_to_normal_mode(self):
-        """Switch to normal notepad mode"""
-        # Handle switching from code mode
-        if self.is_code_mode:
-            self.is_code_mode = False
-            self.remove_line_numbers()
-            self.text_area.configure(wrap='word', padx=15)
-            self.clear_syntax_highlighting()
+    def highlightBlock(self, text):
+        for pattern, format in self.highlighting_rules:
+            iterator = pattern.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), format)
+
+
+class TableDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Insert Table")
+        self.setModal(True)
         
-        # Handle switching from spreadsheet mode
-        if hasattr(self, 'spreadsheet_frame') and self.spreadsheet_frame.winfo_ismapped():
-            self.spreadsheet_frame.pack_forget()
-            # Clear spreadsheet data
-            if hasattr(self, 'cells'):
-                for cell_id, entry in self.cells.items():
-                    entry.delete(0, tk.END)
-            # Show text area and scrollbar if they're hidden
-            self.text_area.pack(side='left', fill='both', expand=True)
-            self.scrollbar.pack(side='right', fill='y')
+        layout = QVBoxLayout()
         
-        # Make sure text area is visible
-        if not self.text_area.winfo_ismapped():
-            self.text_area.pack(side='left', fill='both', expand=True)
-            self.scrollbar.pack(side='right', fill='y')
+        row_layout = QHBoxLayout()
+        row_layout.addWidget(QLabel("Rows:"))
+        self.rows_spin = QSpinBox()
+        self.rows_spin.setMinimum(1)
+        self.rows_spin.setMaximum(50)
+        self.rows_spin.setValue(3)
+        row_layout.addWidget(self.rows_spin)
+        layout.addLayout(row_layout)
         
-        # Show formatting toolbar
-        self.formatting_frame.pack(side='left', padx=(0, 10), pady=0)
+        col_layout = QHBoxLayout()
+        col_layout.addWidget(QLabel("Columns:"))
+        self.cols_spin = QSpinBox()
+        self.cols_spin.setMinimum(1)
+        self.cols_spin.setMaximum(20)
+        self.cols_spin.setValue(3)
+        col_layout.addWidget(self.cols_spin)
+        layout.addLayout(col_layout)
         
-        # Hide language selector
-        self.language_frame.pack_forget()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | 
+                                   QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
         
-        self.status_bar.configure(text="Switched to Normal Mode")
-        self.update_title()
-    
-    def switch_to_spreadsheet_mode(self):
-        """Switch to spreadsheet mode with Excel-like grid"""
-        # Clear existing spreadsheet data if it exists
-        if hasattr(self, 'cells'):
-            for cell_id, entry in self.cells.items():
-                entry.delete(0, tk.END)
+        self.setLayout(layout)
+
+
+class FindReplaceDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_editor = parent
+        self.setWindowTitle("Find and Replace")
+        self.setModal(False)
         
-        # Hide text area and related components
-        self.text_area.pack_forget()
-        self.scrollbar.pack_forget()
+        layout = QVBoxLayout()
         
-        # Remove line numbers if in code mode
-        if self.is_code_mode:
-            self.is_code_mode = False
-            self.remove_line_numbers()
-            self.clear_syntax_highlighting()
+        # Find input
+        find_layout = QHBoxLayout()
+        find_layout.addWidget(QLabel("Find:"))
+        self.find_input = QLineEdit()
+        find_layout.addWidget(self.find_input)
+        layout.addLayout(find_layout)
         
-        # Hide language selector and formatting toolbar
-        self.language_frame.pack_forget()
-        self.formatting_frame.pack_forget()
+        # Replace input
+        replace_layout = QHBoxLayout()
+        replace_layout.addWidget(QLabel("Replace:"))
+        self.replace_input = QLineEdit()
+        replace_layout.addWidget(self.replace_input)
+        layout.addLayout(replace_layout)
         
-        # Create spreadsheet frame if it doesn't exist
-        if not hasattr(self, 'spreadsheet_frame'):
-            self.create_spreadsheet_view()
+        # Options
+        self.case_sensitive = QCheckBox("Case sensitive")
+        self.whole_word = QCheckBox("Whole words only")
+        layout.addWidget(self.case_sensitive)
+        layout.addWidget(self.whole_word)
         
-        # Show spreadsheet view
-        self.spreadsheet_frame.pack(fill='both', expand=True)
+        # Buttons
+        button_layout = QHBoxLayout()
+        find_btn = QPushButton("Find Next")
+        find_btn.clicked.connect(self.find_next)
+        replace_btn = QPushButton("Replace")
+        replace_btn.clicked.connect(self.replace_current)
+        replace_all_btn = QPushButton("Replace All")
+        replace_all_btn.clicked.connect(self.replace_all)
         
-        # Update status and title
-        self.status_bar.configure(text="Switched to Spreadsheet Mode")
-        self.root.title("Spreadsheet - Modern Notepad")
-    
-    def create_spreadsheet_view(self):
-        """Create Excel-like spreadsheet view"""
-        theme = self.themes[self.current_theme]
+        button_layout.addWidget(find_btn)
+        button_layout.addWidget(replace_btn)
+        button_layout.addWidget(replace_all_btn)
+        layout.addLayout(button_layout)
         
-        # Initialize spreadsheet properties
-        self.max_rows = 101  # 1-100 rows initially (0 is header)
-        self.max_cols = 27   # 1-26 columns initially (0 is header, 1-26 for A-Z)
+        self.setLayout(layout)
         
-        # Create main spreadsheet frame
-        self.spreadsheet_frame = tk.Frame(self.text_container, bg=theme["bg"])
-        
-        # Define consistent column width
-        cell_width = 10
-        row_header_width = 4
-        
-        # Create toolbar for spreadsheet actions
-        self.spreadsheet_toolbar = tk.Frame(self.spreadsheet_frame, bg=theme["header_bg"])
-        self.spreadsheet_toolbar.pack(fill='x', side='top')
-        
-        # Add Row button
-        add_row_btn = tk.Button(self.spreadsheet_toolbar, text="Add Row", 
-                              command=self.add_spreadsheet_row,
-                              bg=theme["header_bg"], fg=theme["text_fg"],
-                              activebackground=theme["select_bg"])
-        add_row_btn.pack(side='left', padx=5, pady=2)
-        
-        # Add Column button
-        add_col_btn = tk.Button(self.spreadsheet_toolbar, text="Add Column", 
-                              command=self.add_spreadsheet_column,
-                              bg=theme["header_bg"], fg=theme["text_fg"],
-                              activebackground=theme["select_bg"])
-        add_col_btn.pack(side='left', padx=5, pady=2)
-        
-        # Create header container frame
-        self.header_container = tk.Frame(self.spreadsheet_frame, bg=theme["header_bg"])
-        self.header_container.pack(fill='x', side='top')
-        
-        # Create corner cell (fixed)
-        self.corner_frame = tk.Frame(self.header_container, bg=theme["header_bg"])
-        self.corner_frame.pack(side='left', fill='y')
-        corner_label = tk.Label(self.corner_frame, width=row_header_width, bg=theme["header_bg"], 
-                              fg=theme["text_fg"], relief='raised', borderwidth=1)
-        corner_label.pack(fill='both', expand=True)
-        
-        # Create header canvas for scrollable column headers
-        self.header_canvas = tk.Canvas(self.header_container, bg=theme["header_bg"], 
-                                    height=25, highlightthickness=0)  # Fixed height for header
-        self.header_canvas.pack(side='left', fill='x', expand=True)
-        
-        # Create header frame inside canvas
-        self.header_frame = tk.Frame(self.header_canvas, bg=theme["header_bg"])
-        self.header_window = self.header_canvas.create_window((0, 0), window=self.header_frame, anchor='nw')
-        
-        # Column headers (A, B, C, ...)
-        for col in range(1, self.max_cols):
-            col_label = tk.Label(self.header_frame, text=chr(64 + col), width=cell_width, 
-                               bg=theme["header_bg"], fg=theme["text_fg"],
-                               relief='raised', borderwidth=1)
-            col_label.grid(row=0, column=col-1, sticky='nsew')  # Column index starts at 0 in header frame
-            self.header_frame.columnconfigure(col-1, minsize=cell_width*8)  # Consistent width
-        
-        # Create canvas for scrollable grid
-        self.canvas_frame = tk.Frame(self.spreadsheet_frame)
-        self.canvas_frame.pack(fill='both', expand=True, side='top')
-        
-        self.canvas = tk.Canvas(self.canvas_frame, bg=theme["text_bg"])
-        self.canvas.pack(side='left', fill='both', expand=True)
-        
-        # Add scrollbars
-        # Sync function for horizontal scrolling
-        def on_xview(*args):
-            # Update both canvases with exact same scroll position
-            self.canvas.xview(*args)
-            
-            # Get the current scroll position from the main canvas
-            # and apply exactly the same position to the header canvas
-            if args and len(args) > 0 and args[0] == 'moveto':
-                # For 'moveto' commands, use the exact same position
-                self.header_canvas.xview_moveto(float(args[1]))
-            else:
-                # For other commands (like scroll units/pages), sync after the main canvas updates
-                self.header_canvas.xview_moveto(self.canvas.xview()[0])
-        
-        self.x_scrollbar = ttk.Scrollbar(self.spreadsheet_frame, orient='horizontal', command=on_xview)
-        self.x_scrollbar.pack(side='bottom', fill='x')
-        
-        self.y_scrollbar = ttk.Scrollbar(self.canvas_frame, orient='vertical', command=self.canvas.yview)
-        self.y_scrollbar.pack(side='right', fill='y')
-        
-        # Configure scrolling for both canvases
-        self.canvas.configure(xscrollcommand=self.x_scrollbar.set, yscrollcommand=self.y_scrollbar.set)
-        self.header_canvas.configure(xscrollcommand=self.x_scrollbar.set)
-        
-        # Create frame for cells
-        self.grid_frame = tk.Frame(self.canvas, bg=theme["text_bg"])
-        self.canvas.create_window((0, 0), window=self.grid_frame, anchor='nw')
-        
-        # Configure column widths for grid frame
-        self.grid_frame.columnconfigure(0, minsize=row_header_width*8)  # Row header column
-        for col in range(1, self.max_cols):
-            self.grid_frame.columnconfigure(col, minsize=cell_width*8)  # Consistent width
-        
-        # Row headers (1, 2, 3, ...)
-        for row in range(1, self.max_rows):
-            row_label = tk.Label(self.grid_frame, text=str(row), width=row_header_width, height=1,
-                               bg=theme["header_bg"], fg=theme["text_fg"],
-                               relief='raised', borderwidth=1)
-            row_label.grid(row=row, column=0, sticky='nsew')
-        
-        # Create cells
-        self.cells = {}
-        for row in range(1, self.max_rows):
-            # Configure row height
-            self.grid_frame.rowconfigure(row, minsize=25)  # Consistent row height
-            
-            for col in range(1, self.max_cols):
-                cell = tk.Entry(self.grid_frame, width=cell_width, bg=theme["text_bg"], 
-                              fg=theme["text_fg"], borderwidth=1, relief='solid')
-                cell.grid(row=row, column=col, sticky='nsew')
-                cell.insert(0, "")  # Empty by default
+    def find_next(self):
+        if self.parent_editor and hasattr(self.parent_editor, 'current_tab'):
+            text_edit = self.parent_editor.current_tab()
+            if text_edit:
+                search_text = self.find_input.text()
+                flags = QTextDocument.FindFlag(0)
+                if self.case_sensitive.isChecked():
+                    flags |= QTextDocument.FindFlag.FindCaseSensitively
+                if self.whole_word.isChecked():
+                    flags |= QTextDocument.FindFlag.FindWholeWords
                 
-                # Store cell reference
-                cell_id = f"{chr(64 + col)}{row}"  # e.g., A1, B2, etc.
-                self.cells[cell_id] = cell
+                if not text_edit.find(search_text, flags):
+                    cursor = text_edit.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.Start)
+                    text_edit.setTextCursor(cursor)
+                    if not text_edit.find(search_text, flags):
+                        QMessageBox.information(self, "Find", "Text not found")
+    
+    def replace_current(self):
+        if self.parent_editor and hasattr(self.parent_editor, 'current_tab'):
+            text_edit = self.parent_editor.current_tab()
+            if text_edit:
+                cursor = text_edit.textCursor()
+                if cursor.hasSelection():
+                    cursor.insertText(self.replace_input.text())
+                self.find_next()
+    
+    def replace_all(self):
+        if self.parent_editor and hasattr(self.parent_editor, 'current_tab'):
+            text_edit = self.parent_editor.current_tab()
+            if text_edit:
+                search_text = self.find_input.text()
+                replace_text = self.replace_input.text()
                 
-                # Bind events for cell navigation and clipboard
-                cell.bind("<Return>", lambda e, r=row, c=col: self.move_to_cell(r+1, c))
-                cell.bind("<Tab>", lambda e, r=row, c=col: self.move_to_cell(r, c+1))
-                cell.bind("<Shift-Tab>", lambda e, r=row, c=col: self.move_to_cell(r, c-1))
-                cell.bind("<Up>", lambda e, r=row, c=col: self.move_to_cell(r-1, c))
-                cell.bind("<Down>", lambda e, r=row, c=col: self.move_to_cell(r+1, c))
-                cell.bind("<Left>", lambda e, r=row, c=col: self.move_to_cell(r, c-1))
-                cell.bind("<Right>", lambda e, r=row, c=col: self.move_to_cell(r, c+1))
+                cursor = text_edit.textCursor()
+                cursor.beginEditBlock()
+                cursor.movePosition(QTextCursor.MoveOperation.Start)
+                text_edit.setTextCursor(cursor)
                 
-                # Clipboard bindings
-                cell.bind("<Control-v>", self.paste_to_cells)
-                cell.bind("<Control-c>", self.copy_from_cells)
-        
-        # Update canvas scroll region
-        self.grid_frame.update_idletasks()
-        self.header_frame.update_idletasks()
-        
-        # Configure scroll regions for both canvases
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
-        self.header_canvas.config(scrollregion=(0, 0, self.grid_frame.winfo_width(), self.header_frame.winfo_height()))
-        
-        # Make sure header canvas width matches grid width
-        self.header_canvas.itemconfig(self.header_window, width=self.grid_frame.winfo_width())
-        
-        # Bind grid frame changes to update header canvas
-        def on_frame_configure(event):
-            # Update the scroll region of both canvases
-            self.canvas.config(scrollregion=self.canvas.bbox("all"))
-            self.header_canvas.config(scrollregion=(0, 0, self.grid_frame.winfo_width(), self.header_frame.winfo_height()))
-            # Update header canvas width
-            self.header_canvas.itemconfig(self.header_window, width=self.grid_frame.winfo_width())
-        
-        self.grid_frame.bind("<Configure>", on_frame_configure)
-        
-        # Hide spreadsheet frame initially
-        self.spreadsheet_frame.pack_forget()
-    
-    def move_to_cell(self, row, col):
-        """Move focus to specified cell"""
-        # Ensure row and column are within bounds
-        row = max(1, min(row, self.max_rows - 1))
-        col = max(1, min(col, self.max_cols - 1))
-        
-        # Get cell ID and focus on it
-        cell_id = f"{chr(64 + col)}{row}"
-        if cell_id in self.cells:
-            self.cells[cell_id].focus_set()
-            
-            # Ensure cell is visible by scrolling if needed
-            self.canvas.yview_moveto((row - 1) / (self.max_rows - 1))
-            self.canvas.xview_moveto((col - 1) / (self.max_cols - 1))
-        
-        return "break"  # Prevent default behavior
-        
-    def copy_from_cells(self, event=None):
-        """Copy selected cell content to clipboard"""
-        if event and event.widget:
-            # Get content from the current cell
-            content = event.widget.get()
-            # Copy to clipboard
-            self.clipboard_clear()
-            self.clipboard_append(content)
-            return "break"  # Prevent default behavior
-    
-    def paste_to_cells(self, event=None):
-        """Paste clipboard content to cells"""
-        if event and event.widget:
-            try:
-                # Get clipboard content
-                clipboard_content = self.clipboard_get()
+                count = 0
+                flags = QTextDocument.FindFlag(0)
+                if self.case_sensitive.isChecked():
+                    flags |= QTextDocument.FindFlag.FindCaseSensitively
+                if self.whole_word.isChecked():
+                    flags |= QTextDocument.FindFlag.FindWholeWords
                 
-                # Find current cell position
-                current_cell = event.widget
-                current_cell_id = None
-                current_row = None
-                current_col = None
+                while text_edit.find(search_text, flags):
+                    cursor = text_edit.textCursor()
+                    cursor.insertText(replace_text)
+                    count += 1
                 
-                # Find the cell ID and position
-                for cell_id, cell in self.cells.items():
-                    if cell == current_cell:
-                        current_cell_id = cell_id
-                        # Extract row and column from cell_id (e.g., 'A1' -> col=1, row=1)
-                        current_col = ord(cell_id[0]) - 64  # A=1, B=2, etc.
-                        current_row = int(cell_id[1:])  # Extract row number
-                        break
-                
-                if current_row is not None and current_col is not None:
-                    # Check if content has tab or newline characters (table data)
-                    if '\t' in clipboard_content or '\n' in clipboard_content:
-                        # Split by rows and columns
-                        rows = clipboard_content.strip().split('\n')
-                        
-                        for r_idx, row_data in enumerate(rows):
-                            # Split row by tabs or multiple spaces
-                            import re
-                            cells_data = re.split(r'\t|\s{2,}', row_data)
-                            
-                            for c_idx, cell_data in enumerate(cells_data):
-                                # Calculate target cell position
-                                target_row = current_row + r_idx
-                                target_col = current_col + c_idx
-                                
-                                # Ensure we don't exceed grid boundaries
-                                if target_row < self.max_rows and target_col < self.max_cols:
-                                    target_cell_id = f"{chr(64 + target_col)}{target_row}"
-                                    
-                                    # Update cell if it exists
-                                    if target_cell_id in self.cells:
-                                        # Clear existing content
-                                        self.cells[target_cell_id].delete(0, tk.END)
-                                        # Insert new content
-                                        self.cells[target_cell_id].insert(0, cell_data.strip())
-                    else:
-                        # Single cell paste
-                        current_cell.delete(0, tk.END)
-                        current_cell.insert(0, clipboard_content)
-                
-                return "break"  # Prevent default behavior
-            except Exception as e:
-                print(f"Paste error: {e}")
-        
-        return None
-    
-    def update_spreadsheet_scroll_regions(self):
-        """Update scroll regions for spreadsheet canvases"""
-        # Update canvas scroll region
-        self.grid_frame.update_idletasks()
-        self.header_frame.update_idletasks()
-        
-        # Configure scroll regions for both canvases
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
-        self.header_canvas.config(scrollregion=(0, 0, self.grid_frame.winfo_width(), self.header_frame.winfo_height()))
-        
-        # Make sure header canvas width matches grid width
-        self.header_canvas.itemconfig(self.header_window, width=self.grid_frame.winfo_width())
-    
-    def add_spreadsheet_row(self):
-        """Add a new row to the spreadsheet"""
-        theme = self.themes[self.current_theme]
-        cell_width = 10
-        row_header_width = 4
-        
-        # Increment max rows
-        new_row = self.max_rows
-        self.max_rows += 1
-        
-        # Configure row height
-        self.grid_frame.rowconfigure(new_row, minsize=25)  # Consistent row height
-        
-        # Add row header
-        row_label = tk.Label(self.grid_frame, text=str(new_row), width=row_header_width, height=1,
-                           bg=theme["header_bg"], fg=theme["text_fg"],
-                           relief='raised', borderwidth=1)
-        row_label.grid(row=new_row, column=0, sticky='nsew')
-        
-        # Add cells for the new row
-        for col in range(1, self.max_cols):
-            cell = tk.Entry(self.grid_frame, width=cell_width, bg=theme["text_bg"], 
-                          fg=theme["text_fg"], borderwidth=1, relief='solid')
-            cell.grid(row=new_row, column=col, sticky='nsew')
-            cell.insert(0, "")  # Empty by default
-            
-            # Store cell reference
-            cell_id = f"{chr(64 + col)}{new_row}"  # e.g., A101, B101, etc.
-            self.cells[cell_id] = cell
-            
-            # Bind events for cell navigation and clipboard
-            cell.bind("<Return>", lambda e, r=new_row, c=col: self.move_to_cell(r+1, c))
-            cell.bind("<Tab>", lambda e, r=new_row, c=col: self.move_to_cell(r, c+1))
-            cell.bind("<Shift-Tab>", lambda e, r=new_row, c=col: self.move_to_cell(r, c-1))
-            cell.bind("<Up>", lambda e, r=new_row, c=col: self.move_to_cell(r-1, c))
-            cell.bind("<Down>", lambda e, r=new_row, c=col: self.move_to_cell(r+1, c))
-            cell.bind("<Left>", lambda e, r=new_row, c=col: self.move_to_cell(r, c-1))
-            cell.bind("<Right>", lambda e, r=new_row, c=col: self.move_to_cell(r, c+1))
-            cell.bind("<Control-v>", self.paste_to_cells)
-            cell.bind("<Control-c>", self.copy_from_cells)
-        
-        # Update scroll regions
-        self.update_spreadsheet_scroll_regions()
-    
-    def add_spreadsheet_column(self):
-        """Add a new column to the spreadsheet"""
-        theme = self.themes[self.current_theme]
-        cell_width = 10
-        
-        # Increment max columns
-        new_col = self.max_cols
-        self.max_cols += 1
-        
-        # Configure column width for grid frame
-        self.grid_frame.columnconfigure(new_col, minsize=cell_width*8)  # Consistent width
-        
-        # Add column header
-        col_letter = chr(64 + new_col) if new_col <= 26 else chr(64 + (new_col // 26)) + chr(64 + (new_col % 26))
-        col_label = tk.Label(self.header_frame, text=col_letter, width=cell_width, 
-                           bg=theme["header_bg"], fg=theme["text_fg"],
-                           relief='raised', borderwidth=1)
-        col_label.grid(row=0, column=new_col-1, sticky='nsew')  # Column index starts at 0 in header frame
-        self.header_frame.columnconfigure(new_col-1, minsize=cell_width*8)  # Consistent width
-        
-        # Add cells for the new column
-        for row in range(1, self.max_rows):
-            cell = tk.Entry(self.grid_frame, width=cell_width, bg=theme["text_bg"], 
-                          fg=theme["text_fg"], borderwidth=1, relief='solid')
-            cell.grid(row=row, column=new_col, sticky='nsew')
-            cell.insert(0, "")  # Empty by default
-            
-            # Store cell reference
-            cell_id = f"{col_letter}{row}"  # e.g., AA1, AA2, etc.
-            self.cells[cell_id] = cell
-            
-            # Bind events for cell navigation and clipboard
-            cell.bind("<Return>", lambda e, r=row, c=new_col: self.move_to_cell(r+1, c))
-            cell.bind("<Tab>", lambda e, r=row, c=new_col: self.move_to_cell(r, c+1))
-            cell.bind("<Shift-Tab>", lambda e, r=row, c=new_col: self.move_to_cell(r, c-1))
-            cell.bind("<Up>", lambda e, r=row, c=new_col: self.move_to_cell(r-1, c))
-            cell.bind("<Down>", lambda e, r=row, c=new_col: self.move_to_cell(r+1, c))
-            cell.bind("<Left>", lambda e, r=row, c=new_col: self.move_to_cell(r, c-1))
-            cell.bind("<Right>", lambda e, r=row, c=new_col: self.move_to_cell(r, c+1))
-            cell.bind("<Control-v>", self.paste_to_cells)
-            cell.bind("<Control-c>", self.copy_from_cells)
-        
-        # Update scroll regions
-        self.update_spreadsheet_scroll_regions()
-    
-    def create_line_numbers(self):
-        """Create line numbers for code mode"""
-        # Create line numbers frame
-        self.line_numbers_frame = tk.Frame(self.text_container, bg='#2d2d30', width=50)
-        self.line_numbers_frame.pack(side='left', fill='y', before=self.text_area)
-        
-        # Create canvas for line numbers
-        self.line_numbers_canvas = tk.Canvas(self.line_numbers_frame, 
-                                           bg='#2d2d30', 
-                                           highlightthickness=0,
-                                           width=50)
-        self.line_numbers_canvas.pack(fill='both', expand=True)
-        
-        # Synchronize line numbers with text scrolling
-        self.text_area.bind("<<Modified>>", self.update_line_numbers)
-        self.text_area.bind("<Configure>", self.update_line_numbers)
-        self.text_area.bind("<MouseWheel>", self.update_line_numbers)
-        
-        # Update line numbers
-        self.update_line_numbers()
-    
-    def remove_line_numbers(self):
-        """Remove line numbers when switching back to normal mode"""
-        if self.line_numbers_frame:
-            self.line_numbers_frame.destroy()
-            self.line_numbers_frame = None
-            self.line_numbers_canvas = None
-    
-    def update_line_numbers(self, event=None):
-        """Update line numbers display"""
-        if not self.is_code_mode or not self.line_numbers_canvas:
+                cursor.endEditBlock()
+                QMessageBox.information(self, "Replace All", f"Replaced {count} occurrence(s)")
+
+class ImageResizeDialog(QDialog):
+    def __init__(self, width, height, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Resize Image")
+        self.setModal(True)
+        layout = QVBoxLayout()
+        w_layout = QHBoxLayout()
+        w_layout.addWidget(QLabel("Width:"))
+        self.width_spin = QSpinBox()
+        self.width_spin.setMinimum(10)
+        self.width_spin.setMaximum(5000)
+        self.width_spin.setValue(int(width) if width else 100)
+        w_layout.addWidget(self.width_spin)
+        layout.addLayout(w_layout)
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel("Height:"))
+        self.height_spin = QSpinBox()
+        self.height_spin.setMinimum(10)
+        self.height_spin.setMaximum(5000)
+        self.height_spin.setValue(int(height) if height else 100)
+        h_layout.addWidget(self.height_spin)
+        layout.addLayout(h_layout)
+        self.lock_ratio = QCheckBox("Lock aspect ratio")
+        self.lock_ratio.setChecked(True)
+        layout.addWidget(self.lock_ratio)
+        self._ratio = (width / height) if width and height else None
+        def sync_height(val):
+            if self.lock_ratio.isChecked() and self._ratio:
+                self.height_spin.blockSignals(True)
+                self.height_spin.setValue(max(10, int(round(val / self._ratio))))
+                self.height_spin.blockSignals(False)
+        def sync_width(val):
+            if self.lock_ratio.isChecked() and self._ratio:
+                self.width_spin.blockSignals(True)
+                self.width_spin.setValue(max(10, int(round(val * self._ratio))))
+                self.width_spin.blockSignals(False)
+        self.width_spin.valueChanged.connect(sync_height)
+        self.height_spin.valueChanged.connect(sync_width)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+class LanguageHighlighter(QSyntaxHighlighter):
+    def __init__(self, document, language="Python"):
+        super().__init__(document)
+        self.language = language
+        self.highlighting_rules = []
+        self.multi_start = None
+        self.multi_end = None
+        self.set_language(language)
+    def set_language(self, language):
+        self.language = language
+        self.highlighting_rules = []
+        self.multi_start = None
+        self.multi_end = None
+        if language == "Text":
             return
-        
-        self.line_numbers_canvas.delete('all')
-        
-        # Get visible lines
-        first_line = int(self.text_area.index('@0,0').split('.')[0])
-        last_line = int(self.text_area.index(f'@0,{self.text_area.winfo_height()}').split('.')[0])
-        
-        # Get text widget font and calculate line height
-        font_obj = font.Font(font=self.text_area['font'])
-        line_height = font_obj.metrics('linespace')
-        
-        # Draw line numbers aligned with text
-        for line_num in range(first_line, last_line + 1):
-            # Get y-coordinate of the line in the text widget
-            dline = self.text_area.dlineinfo(f"{line_num}.0")
-            if dline:  # Line is visible
-                y = dline[1]  # y-coordinate of the line
-                self.line_numbers_canvas.create_text(
-                    45,  # x position (right-aligned)
-                    y + line_height/2,  # y position (centered vertically with line)
-                    text=str(line_num),
-                    fill='#858585',
-                    font=('Consolas', 9),
-                    anchor='e'
-                )
-    
-    def on_language_change(self, event=None):
-        """Handle language change from dropdown"""
-        self.current_language = self.language_var.get()
-        self.apply_syntax_highlighting()
-        self.status_bar.configure(text=f"Language changed to {self.current_language}")
-        self.root.title(f"Code ({self.current_language}) - Modern Notepad")
-    
-    def apply_syntax_highlighting(self):
-        """Apply syntax highlighting to the text"""
-        if not self.is_code_mode:
-            return
-        
-        content = self.text_area.get('1.0', tk.END)
-        
-        # Clear existing tags
-        for tag in ['keyword', 'string', 'comment', 'number', 'function']:
-            self.text_area.tag_remove(tag, '1.0', tk.END)
-        
-        # Get keywords based on selected language
-        keywords = self.get_language_keywords()
-        
-        lines = content.split('\n')
-        for line_num, line in enumerate(lines, 1):
-            # Highlight keywords
-            for keyword in keywords:
-                pattern = r'\b' + re.escape(keyword) + r'\b'
-                for match in re.finditer(pattern, line):
-                    start = f"{line_num}.{match.start()}"
-                    end = f"{line_num}.{match.end()}"
-                    self.text_area.tag_add('keyword', start, end)
-            
-            # Highlight strings
-            string_patterns = [r'".*?"', r"'.*?'"]
-            for pattern in string_patterns:
-                for match in re.finditer(pattern, line):
-                    start = f"{line_num}.{match.start()}"
-                    end = f"{line_num}.{match.end()}"
-                    self.text_area.tag_add('string', start, end)
-            
-            # Highlight comments
-            comment_match = re.search(r'#.*$', line)
-            if comment_match:
-                start = f"{line_num}.{comment_match.start()}"
-                end = f"{line_num}.{comment_match.end()}"
-                self.text_area.tag_add('comment', start, end)
-            
-            # Highlight numbers
-            for match in re.finditer(r'\b\d+\.?\d*\b', line):
-                start = f"{line_num}.{match.start()}"
-                end = f"{line_num}.{match.end()}"
-                self.text_area.tag_add('number', start, end)
-            
-            # Highlight function definitions
-            func_match = re.search(r'def\s+(\w+)', line)
-            if func_match:
-                start = f"{line_num}.{func_match.start(1)}"
-                end = f"{line_num}.{func_match.end(1)}"
-                self.text_area.tag_add('function', start, end)
-    
-    def clear_syntax_highlighting(self):
-        """Clear all syntax highlighting"""
-        for tag in ['keyword', 'string', 'comment', 'number', 'function']:
-            self.text_area.tag_remove(tag, '1.0', tk.END)
-    
-    def get_language_keywords(self):
-        """Get keywords for the selected programming language"""
-        language_keywords = {
-            "Python": ['def', 'class', 'if', 'else', 'elif', 'for', 'while', 'try', 'except', 
-                      'finally', 'with', 'as', 'import', 'from', 'return', 'yield', 'break', 
-                      'continue', 'pass', 'and', 'or', 'not', 'in', 'is', 'lambda', 'True', 
-                      'False', 'None', 'self', 'super', 'print'],
-            
-            "JavaScript": ['function', 'var', 'let', 'const', 'if', 'else', 'for', 'while', 'do', 
-                         'switch', 'case', 'default', 'break', 'continue', 'return', 'try', 
-                         'catch', 'finally', 'throw', 'new', 'this', 'typeof', 'instanceof', 
-                         'null', 'undefined', 'true', 'false', 'class', 'extends', 'super', 
-                         'import', 'export', 'async', 'await'],
-            
-            "Java": ['abstract', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char', 
-                    'class', 'const', 'continue', 'default', 'do', 'double', 'else', 'enum', 
-                    'extends', 'final', 'finally', 'float', 'for', 'if', 'implements', 'import', 
-                    'instanceof', 'int', 'interface', 'long', 'native', 'new', 'package', 'private', 
-                    'protected', 'public', 'return', 'short', 'static', 'strictfp', 'super', 'switch', 
-                    'synchronized', 'this', 'throw', 'throws', 'transient', 'try', 'void', 'volatile', 'while'],
-            
-            "C++": ['auto', 'break', 'case', 'char', 'class', 'const', 'continue', 'default', 
-                   'delete', 'do', 'double', 'else', 'enum', 'extern', 'float', 'for', 'friend', 
-                   'goto', 'if', 'inline', 'int', 'long', 'namespace', 'new', 'operator', 'private', 
-                   'protected', 'public', 'register', 'return', 'short', 'signed', 'sizeof', 'static', 
-                   'struct', 'switch', 'template', 'this', 'throw', 'try', 'typedef', 'union', 
-                   'unsigned', 'virtual', 'void', 'volatile', 'while'],
-            
-            "SQL": ['SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 
-                   'DROP', 'TABLE', 'DATABASE', 'VIEW', 'INDEX', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 
-                   'FULL', 'OUTER', 'ON', 'GROUP', 'BY', 'HAVING', 'ORDER', 'ASC', 'DESC', 'LIMIT', 
-                   'OFFSET', 'UNION', 'ALL', 'AS', 'DISTINCT', 'INTO', 'VALUES', 'SET', 'CONSTRAINT', 
-                   'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'NOT', 'NULL', 'DEFAULT', 'AUTO_INCREMENT']
+        kw_map = {
+            "Python": [
+                "and","as","assert","break","class","continue","def","del","elif","else","except","False","finally","for","from","global","if","import","in","is","lambda","None","nonlocal","not","or","pass","raise","return","True","try","while","with","yield"
+            ],
+            "R": [
+                "function","if","else","repeat","while","for","in","next","break","TRUE","FALSE","NULL","NA","NaN","Inf"
+            ]
         }
-        
-        # Return keywords for selected language or Python as fallback
-        return language_keywords.get(self.current_language, language_keywords["Python"])
-    
-    def on_key_release(self, event=None):
-        """Handle key release events"""
-        self.update_status()
-        if self.is_code_mode:
-            self.apply_syntax_highlighting()
-            self.update_line_numbers()
-    
-    def on_click(self, event=None):
-        """Handle click events"""
-        self.update_status()
-        if self.is_code_mode:
-            self.update_line_numbers()
-    
-    def change_theme(self, theme_name):
-        """Change the application theme"""
-        if theme_name == "system":
-            self.themes["system"] = self.get_system_theme()
-        
-        self.current_theme = theme_name
-        self.setup_styles()
-        self.apply_theme_to_text_area()
-        self.setup_syntax_highlighting()
-        
-        # Update context menu colors
-        self.create_context_menu()
-        
-        # Re-apply syntax highlighting if in code mode
-        if self.is_code_mode:
-            self.apply_syntax_highlighting()
-        
-        self.status_bar.configure(text=f"Theme changed to {theme_name.title()}")
-    
-    def apply_theme_to_text_area(self):
-        """Apply current theme to text area"""
-        theme = self.themes[self.current_theme]
-        self.text_area.configure(
-            bg=theme["text_bg"],
-            fg=theme["text_fg"],
-            insertbackground=theme["text_fg"],
-            selectbackground=theme["select_bg"]
-        )
-        
-        # Update text container background
-        self.text_container.configure(bg=theme["bg"])
-        
-        # Update line numbers if in code mode
-        if self.is_code_mode and self.line_numbers_canvas:
-            line_bg = "#2d2d30" if self.current_theme != "light" else "#f5f5f5"
-            self.line_numbers_canvas.configure(bg=line_bg)
-            self.line_numbers_frame.configure(bg=line_bg)
-            self.update_line_numbers()
-    
-    def toggle_bold(self):
-        """Toggle bold formatting for selected text"""
-        try:
-            if self.text_area.tag_ranges(tk.SEL):
-                # Store selection range
-                sel_start = self.text_area.index(tk.SEL_FIRST)
-                sel_end = self.text_area.index(tk.SEL_LAST)
-                
-                current_tags = self.text_area.tag_names(tk.SEL_FIRST)
-                if "bold" in current_tags:
-                    self.text_area.tag_remove("bold", sel_start, sel_end)
-                    self.current_formatting['bold'] = False
-                else:
-                    self.text_area.tag_add("bold", sel_start, sel_end)
-                    self.text_area.tag_configure("bold", font=("Segoe UI", 12, "bold"))
-                    self.current_formatting['bold'] = True
-                
-                # Restore selection
-                self.text_area.tag_add(tk.SEL, sel_start, sel_end)
-                self.text_area.mark_set(tk.INSERT, sel_end)
-                
-                # Update button states based on selection
-                self.update_current_formatting()
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(QColor("#CC7832"))
+        keyword_format.setFontWeight(QFont.Weight.Bold)
+        for w in kw_map.get(language, []):
+            self.highlighting_rules.append((QRegularExpression(f"\\b{w}\\b"), keyword_format))
+        string_format = QTextCharFormat()
+        string_format.setForeground(QColor("#6A8759"))
+        if language != "Text":
+            self.highlighting_rules.append((QRegularExpression('"[^"]*"'), string_format))
+            self.highlighting_rules.append((QRegularExpression("'[^']*'"), string_format))
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(QColor("#808080"))
+        comment_format.setFontItalic(True)
+        if language in ("Python","R"):
+            self.highlighting_rules.append((QRegularExpression("#[^\n]*"), comment_format))
+    def highlightBlock(self, text):
+        for pattern, fmt in self.highlighting_rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), fmt)
+        if self.multi_start and self.multi_end:
+            start = 0
+            if self.previousBlockState() != 1:
+                match = self.multi_start.match(text, 0)
+                start = match.capturedStart() if match.hasMatch() else -1
             else:
-                # Toggle for future text input
-                self.current_formatting['bold'] = not self.current_formatting['bold']
-                self.update_button_states()
-        except tk.TclError:
-            pass
-    
-    def toggle_italic(self):
-        """Toggle italic formatting for selected text"""
+                start = 0
+            while start >= 0:
+                match_end = self.multi_end.match(text, start)
+                end = match_end.capturedEnd() if match_end.hasMatch() else -1
+                length = (end - start) if end >= 0 else (len(text) - start)
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#808080"))
+                self.setFormat(start, length, fmt)
+                if end < 0:
+                    self.setCurrentBlockState(1)
+                    return
+                start_match = self.multi_start.match(text, end)
+                start = start_match.capturedStart() if start_match.hasMatch() else -1
+            self.setCurrentBlockState(0)
+
+try:
+    from pygments import lex
+    from pygments.lexers import PythonLexer
+    try:
+        from pygments.lexers.r import SLexer as RLexer
+    except Exception:
+        RLexer = None
+    from pygments.token import Token
+except Exception:
+    lex = None
+    PythonLexer = None
+    RLexer = None
+    Token = None
+
+class PygmentsHighlighter(QSyntaxHighlighter):
+    def __init__(self, document, lexer_name="Python"):
+        super().__init__(document)
+        self.lexer = None
+        self.language = lexer_name
+        self.set_lexer_from_language(lexer_name)
+    def set_lexer_from_language(self, language):
+        self.language = language
+        if language == "Python" and PythonLexer:
+            self.lexer = PythonLexer()
+        elif language == "R" and RLexer:
+            self.lexer = RLexer()
+        else:
+            self.lexer = None
+    def highlightBlock(self, text):
+        if not self.lexer or not lex:
+            return
+        for tok_type, tok_text in lex(text, self.lexer):
+            fmt = QTextCharFormat()
+            if tok_type in Token.Keyword:
+                fmt.setForeground(QColor("#CC7832"))
+                fmt.setFontWeight(QFont.Weight.Bold)
+            elif tok_type in Token.String:
+                fmt.setForeground(QColor("#6A8759"))
+            elif tok_type in Token.Comment:
+                fmt.setForeground(QColor("#808080"))
+                fmt.setFontItalic(True)
+            elif tok_type in Token.Number:
+                fmt.setForeground(QColor("#6897BB"))
+            elif tok_type in Token.Name.Builtin:
+                fmt.setForeground(QColor("#A5C261"))
+            start = text.find(tok_text, 0 if tok_text else 0)
+            while fmt.foreground().color().isValid() and tok_text and start != -1:
+                self.setFormat(start, len(tok_text), fmt)
+                start = text.find(tok_text, start + len(tok_text))
+
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+    def sizeHint(self):
+        return QSize(self.editor.lineNumberAreaWidth(), 0)
+    def paintEvent(self, event):
+        self.editor.lineNumberAreaPaintEvent(event)
+
+class RichTextEdit(QTextEdit):
+    def __init__(self):
+        super().__init__()
+        self.showLineNumbers = False
+        self.lineNumberArea = LineNumberArea(self)
+        self.verticalScrollBar().valueChanged.connect(self.lineNumberArea.update)
+        self.textChanged.connect(self.lineNumberArea.update)
+        self.cursorPositionChanged.connect(self.highlightCurrentLine)
+        self.highlighter = PygmentsHighlighter(self.document(), "Python") if lex and PythonLexer else LanguageHighlighter(self.document(), "Python")
+        self.updateLineNumberAreaWidth()
+        self._img_resize_active = False
+        self._img_cursor_pos = None
+        self._img_start_pos = None
+        self._img_initial_size = None
+        self._img_name = None
+        self._img_handle_pad = 8
+    def canInsertFromMimeData(self, source):
+        if hasattr(source, 'hasImage') and source.hasImage():
+            return True
+        if hasattr(source, 'hasUrls') and source.hasUrls():
+            return True
+        return super().canInsertFromMimeData(source)
+    def insertFromMimeData(self, source):
         try:
-            if self.text_area.tag_ranges(tk.SEL):
-                # Store selection range
-                sel_start = self.text_area.index(tk.SEL_FIRST)
-                sel_end = self.text_area.index(tk.SEL_LAST)
-                
-                current_tags = self.text_area.tag_names(tk.SEL_FIRST)
-                if "italic" in current_tags:
-                    self.text_area.tag_remove("italic", sel_start, sel_end)
-                    self.current_formatting['italic'] = False
+            if hasattr(source, 'hasImage') and source.hasImage():
+                image = source.imageData()
+                if isinstance(image, QImage):
+                    img = image
                 else:
-                    self.text_area.tag_add("italic", sel_start, sel_end)
-                    self.text_area.tag_configure("italic", font=("Segoe UI", 12, "italic"))
-                    self.current_formatting['italic'] = True
-                
-                # Restore selection
-                self.text_area.tag_add(tk.SEL, sel_start, sel_end)
-                self.text_area.mark_set(tk.INSERT, sel_end)
-                
-                # Update button states based on selection
-                self.update_current_formatting()
-            else:
-                # Toggle for future text input
-                self.current_formatting['italic'] = not self.current_formatting['italic']
-                self.update_button_states()
-        except tk.TclError:
-            pass
-    
-    def toggle_underline(self):
-        """Toggle underline formatting for selected text"""
-        try:
-            if self.text_area.tag_ranges(tk.SEL):
-                # Store selection range
-                sel_start = self.text_area.index(tk.SEL_FIRST)
-                sel_end = self.text_area.index(tk.SEL_LAST)
-                
-                current_tags = self.text_area.tag_names(tk.SEL_FIRST)
-                if "underline" in current_tags:
-                    self.text_area.tag_remove("underline", sel_start, sel_end)
-                    self.current_formatting['underline'] = False
-                else:
-                    self.text_area.tag_add("underline", sel_start, sel_end)
-                    self.text_area.tag_configure("underline", underline=True)
-                    self.current_formatting['underline'] = True
-                
-                # Restore selection
-                self.text_area.tag_add(tk.SEL, sel_start, sel_end)
-                self.text_area.mark_set(tk.INSERT, sel_end)
-                
-                # Update button states based on selection
-                self.update_current_formatting()
-            else:
-                # Toggle for future text input
-                self.current_formatting['underline'] = not self.current_formatting['underline']
-                self.update_button_states()
-        except tk.TclError:
-            pass
-    
-    def change_font_size(self, event=None):
-        """Change font size for selected text"""
-        try:
-            size = int(self.size_var.get())
-            self.current_formatting['size'] = size
-            
-            if self.text_area.tag_ranges(tk.SEL):
-                # Store selection range
-                sel_start = self.text_area.index(tk.SEL_FIRST)
-                sel_end = self.text_area.index(tk.SEL_LAST)
-                
-                tag_name = f"size_{size}"
-                self.text_area.tag_add(tag_name, sel_start, sel_end)
-                self.text_area.tag_configure(tag_name, font=("Segoe UI", size))
-                
-                # Restore selection
-                self.text_area.tag_add(tk.SEL, sel_start, sel_end)
-                self.text_area.mark_set(tk.INSERT, sel_end)
-        except (tk.TclError, ValueError):
-            pass
-    
-    def change_text_color(self):
-        """Change text color for selected text"""
-        try:
-            from tkinter import colorchooser
-            color = colorchooser.askcolor(title="Choose text color")
-            if color[1]:  # If a color was selected
-                self.current_formatting['color'] = color[1]
-                tag_name = f"color_{color[1].replace('#', '')}"
-                
-                if self.text_area.tag_ranges(tk.SEL):
-                    # Store selection range
-                    sel_start = self.text_area.index(tk.SEL_FIRST)
-                    sel_end = self.text_area.index(tk.SEL_LAST)
-                    
-                    self.text_area.tag_add(tag_name, sel_start, sel_end)
-                    self.text_area.tag_configure(tag_name, foreground=color[1])
-                    
-                    # Restore selection
-                    self.text_area.tag_add(tk.SEL, sel_start, sel_end)
-                    self.text_area.mark_set(tk.INSERT, sel_end)
-        except tk.TclError:
-            pass
-    
-    def change_highlight_color(self):
-        """Change highlight color for selected text"""
-        try:
-            from tkinter import colorchooser
-            color = colorchooser.askcolor(title="Choose highlight color")
-            if color[1]:  # If a color was selected
-                self.current_formatting['highlight'] = color[1]
-                tag_name = f"highlight_{color[1].replace('#', '')}"
-                
-                if self.text_area.tag_ranges(tk.SEL):
-                    # Store selection range
-                    sel_start = self.text_area.index(tk.SEL_FIRST)
-                    sel_end = self.text_area.index(tk.SEL_LAST)
-                    
-                    self.text_area.tag_add(tag_name, sel_start, sel_end)
-                    self.text_area.tag_configure(tag_name, background=color[1])
-                    
-                    # Restore selection
-                    self.text_area.tag_add(tk.SEL, sel_start, sel_end)
-                    self.text_area.mark_set(tk.INSERT, sel_end)
-        except tk.TclError:
-            pass
-     
-    def update_current_formatting(self, event=None):
-        """Update current formatting state based on cursor position"""
-        try:
-            cursor_pos = self.text_area.index(tk.INSERT)
-            tags_at_cursor = self.text_area.tag_names(cursor_pos)
-            
-            # Update formatting state based on tags at cursor
-            self.current_formatting['bold'] = 'bold' in tags_at_cursor
-            self.current_formatting['italic'] = 'italic' in tags_at_cursor
-            self.current_formatting['underline'] = 'underline' in tags_at_cursor
-            
-            # Check for size tags
-            for tag in tags_at_cursor:
-                if tag.startswith('size_'):
-                    try:
-                        size = int(tag.split('_')[1])
-                        self.current_formatting['size'] = size
-                        self.size_var.set(str(size))
-                    except (ValueError, IndexError):
-                        pass
-            
-            # Check for color tags
-            for tag in tags_at_cursor:
-                if tag.startswith('color_'):
-                    self.current_formatting['color'] = f"#{tag.split('_')[1]}"
-                elif tag.startswith('highlight_'):
-                    self.current_formatting['highlight'] = f"#{tag.split('_')[1]}"
-            
-            self.update_button_states()
-        except tk.TclError:
-            pass
-     
-    def update_button_states(self):
-        """Update button appearance based on current formatting state"""
-        try:
-            # Update button styles to show active state
-            bold_style = 'Active.TButton' if self.current_formatting['bold'] else 'Header.TButton'
-            italic_style = 'Active.TButton' if self.current_formatting['italic'] else 'Header.TButton'
-            underline_style = 'Active.TButton' if self.current_formatting['underline'] else 'Header.TButton'
-            
-            self.bold_button.configure(style=bold_style)
-            self.italic_button.configure(style=italic_style)
-            self.underline_button.configure(style=underline_style)
-        except tk.TclError:
-            pass
-     
-    def on_key_press_format(self, event):
-        """Apply current formatting to newly typed characters"""
-        try:
-            # Only apply formatting to printable characters
-            if event.char and event.char.isprintable() and not self.is_code_mode:
-                # Get current cursor position
-                cursor_pos = self.text_area.index(tk.INSERT)
-                
-                # Schedule formatting application after character is inserted
-                self.root.after_idle(lambda: self.apply_formatting_to_new_char(cursor_pos))
+                    img = QImage(image)
+                if not img.isNull():
+                    max_width = 600
+                    if img.width() > max_width:
+                        img = img.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
+                    base_dir = getattr(self, 'session_images_dir', None) or tempfile.gettempdir()
+                    os.makedirs(base_dir, exist_ok=True)
+                    temp_path = os.path.join(base_dir, f"img_{uuid.uuid4().hex}.png")
+                    img.save(temp_path, 'PNG')
+                    fmt = QTextImageFormat()
+                    fmt.setName(temp_path)
+                    fmt.setWidth(img.width())
+                    fmt.setHeight(img.height())
+                    self.textCursor().insertImage(fmt)
+                    return
+            if hasattr(source, 'hasUrls') and source.hasUrls():
+                from PyQt6.QtCore import QUrl
+                urls = source.urls()
+                for u in urls:
+                    p = u.toLocalFile()
+                    if p and os.path.exists(p):
+                        ext = os.path.splitext(p)[1].lower()
+                        if ext in ('.png','.jpg','.jpeg','.bmp','.gif'):
+                            img = QImage(p)
+                            if not img.isNull():
+                                max_width = 600
+                                if img.width() > max_width:
+                                    img = img.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
+                                base_dir = getattr(self, 'session_images_dir', None) or tempfile.gettempdir()
+                                os.makedirs(base_dir, exist_ok=True)
+                                dest = os.path.join(base_dir, f"img_{uuid.uuid4().hex}{ext}")
+                                img.save(dest)
+                                fmt = QTextImageFormat()
+                                fmt.setName(dest)
+                                fmt.setWidth(img.width())
+                                fmt.setHeight(img.height())
+                                self.textCursor().insertImage(fmt)
+                                continue
         except Exception:
             pass
-     
-    def apply_formatting_to_new_char(self, start_pos):
-        """Apply current formatting to the newly inserted character"""
+        super().insertFromMimeData(source)
+    def lineNumberAreaWidth(self):
+        if not self.showLineNumbers:
+            return 0
+        digits = len(str(max(1, self.document().blockCount())))
+        fm = self.fontMetrics()
+        return 14 + fm.horizontalAdvance("9") * digits
+    def updateLineNumberAreaWidth(self):
+        self.setViewportMargins(self.lineNumberAreaWidth(), 0, 0, 0)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self.lineNumberArea.setGeometry(QRect(cr.left(), cr.top(), self.lineNumberAreaWidth(), cr.height()))
+    def lineNumberAreaPaintEvent(self, event):
+        if not self.showLineNumbers:
+            return
+        painter = QPainter(self.lineNumberArea)
+        painter.fillRect(event.rect(), self.palette().color(QPalette.ColorRole.Base))
+        block = self.document().firstBlock()
+        viewport_h = self.viewport().height()
+        printed_tops = []
+        line_no = 0
+        while block.isValid():
+            cursor = QTextCursor(block)
+            r = self.cursorRect(cursor)
+            y = r.top()
+            already = any(abs(y - py) <= 1 for py in printed_tops)
+            if not already:
+                line_no += 1
+            if y > viewport_h:
+                break
+            if r.bottom() >= 0 and not already:
+                printed_tops.append(y)
+                painter.setPen(QColor("#808080"))
+                fm = self.fontMetrics()
+                text = str(line_no)
+                x = self.lineNumberArea.width() - fm.horizontalAdvance(text) - 6
+                painter.drawText(x, y + fm.ascent(), text)
+            block = block.next()
+    def setLineNumbersVisible(self, visible):
+        self.showLineNumbers = visible
+        self.updateLineNumberAreaWidth()
+        self.lineNumberArea.update()
+        self.highlightCurrentLine()
+    def highlightCurrentLine(self):
+        if not self.showLineNumbers:
+            self.setExtraSelections([])
+            return
+        sel = QTextEdit.ExtraSelection()
+        line_color = self.palette().color(QPalette.ColorRole.Base).lighter(110)
+        sel.format.setBackground(line_color)
+        sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+        sel.cursor = self.textCursor()
+        sel.cursor.clearSelection()
+        self.setExtraSelections([sel])
+    def setLanguage(self, language):
+        use_pygments = False
+        if lex:
+            if language == "Python" and PythonLexer:
+                use_pygments = True
+            elif language == "R" and RLexer:
+                use_pygments = True
+        if hasattr(self, 'highlighter') and self.highlighter:
+            try:
+                self.highlighter.setDocument(None)
+            except Exception:
+                pass
+        if use_pygments:
+            self.highlighter = PygmentsHighlighter(self.document(), language)
+        else:
+            self.highlighter = LanguageHighlighter(self.document(), language)
         try:
-            # Calculate end position (one character after start)
-            end_pos = f"{start_pos}+1c"
-            
-            # Apply active formatting
-            if self.current_formatting['bold']:
-                self.text_area.tag_add("bold", start_pos, end_pos)
-                self.text_area.tag_configure("bold", font=("Segoe UI", self.current_formatting['size'], "bold"))
-            
-            if self.current_formatting['italic']:
-                self.text_area.tag_add("italic", start_pos, end_pos)
-                self.text_area.tag_configure("italic", font=("Segoe UI", self.current_formatting['size'], "italic"))
-            
-            if self.current_formatting['underline']:
-                self.text_area.tag_add("underline", start_pos, end_pos)
-                self.text_area.tag_configure("underline", underline=True)
-            
-            if self.current_formatting['size'] != 12:
-                tag_name = f"size_{self.current_formatting['size']}"
-                self.text_area.tag_add(tag_name, start_pos, end_pos)
-                self.text_area.tag_configure(tag_name, font=("Segoe UI", self.current_formatting['size']))
-            
-            if self.current_formatting['color']:
-                tag_name = f"color_{self.current_formatting['color'].replace('#', '')}"
-                self.text_area.tag_add(tag_name, start_pos, end_pos)
-                self.text_area.tag_configure(tag_name, foreground=self.current_formatting['color'])
-            
-            if self.current_formatting['highlight']:
-                tag_name = f"highlight_{self.current_formatting['highlight'].replace('#', '')}"
-                self.text_area.tag_add(tag_name, start_pos, end_pos)
-                self.text_area.tag_configure(tag_name, background=self.current_formatting['highlight'])
-        except tk.TclError:
+            self.highlighter.rehighlight()
+        except Exception:
             pass
-    
-    def handle_text_replacement(self, event):
-        """Handle typing over selected text"""
-        try:
-            # Check if there's a selection and the key is a printable character
-            if (self.text_area.tag_ranges(tk.SEL) and 
-                len(event.char) == 1 and event.char.isprintable() and 
-                event.keysym not in ['BackSpace', 'Delete', 'Return', 'Tab']):
-                
-                # Get the formatting from the selected text
-                self.inherit_formatting_from_selection()
-                
-                # Delete the selected text
-                self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
-                
-                # Insert the new character with inherited formatting
-                insert_pos = self.text_area.index(tk.INSERT)
-                self.text_area.insert(insert_pos, event.char)
-                
-                # Apply formatting to the new character
-                self.apply_formatting_to_new_char(insert_pos)
-                
-                # Prevent the default behavior
-                return "break"
-                
-        except tk.TclError:
-            pass
-        
-        return None
-    
-    def handle_backspace(self, event):
-        """Handle backspace key when text is selected"""
-        try:
-            if self.text_area.tag_ranges(tk.SEL):
-                # Get formatting from selection before deleting
-                self.inherit_formatting_from_selection()
-                
-                # Delete the selected text
-                self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
-                
-                # Prevent default backspace behavior
-                return "break"
-        except tk.TclError:
-            pass
-        
-        return None
-    
-    def handle_delete(self, event):
-        """Handle delete key when text is selected"""
-        try:
-            if self.text_area.tag_ranges(tk.SEL):
-                # Get formatting from selection before deleting
-                self.inherit_formatting_from_selection()
-                
-                # Delete the selected text
-                self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
-                
-                # Prevent default delete behavior
-                return "break"
-        except tk.TclError:
-            pass
-        
-        return None
-    
-    def inherit_formatting_from_selection(self):
-        """Inherit formatting from the selected text"""
-        try:
-            if self.text_area.tag_ranges(tk.SEL):
-                start_pos = self.text_area.index(tk.SEL_FIRST)
-                
-                # Get all tags at the start of selection
-                tags = self.text_area.tag_names(start_pos)
-                
-                # Reset current formatting
-                self.current_formatting = {
-                    'bold': False,
-                    'italic': False,
-                    'underline': False,
-                    'size': 12,
-                    'color': None,
-                    'highlight': None
-                }
-                
-                # Check for formatting tags
-                for tag in tags:
-                    if tag == 'bold':
-                        self.current_formatting['bold'] = True
-                    elif tag == 'italic':
-                        self.current_formatting['italic'] = True
-                    elif tag == 'underline':
-                        self.current_formatting['underline'] = True
-                    elif tag.startswith('size_'):
-                        try:
-                            size = int(tag.split('_')[1])
-                            self.current_formatting['size'] = size
-                            self.size_var.set(str(size))
-                        except (ValueError, IndexError):
-                            pass
-                    elif tag.startswith('color_'):
-                        color = '#' + tag.split('_')[1]
-                        self.current_formatting['color'] = color
-                    elif tag.startswith('highlight_'):
-                        color = '#' + tag.split('_')[1]
-                        self.current_formatting['highlight'] = color
-                
-                # Update button states
-                self.update_button_states()
-                
-        except tk.TclError:
-            pass
-    
-    def on_closing(self):
-        """Handle window closing"""
-        if self.check_unsaved_changes():
-            self.root.destroy()
-    
-    def run(self):
-        """Start the application"""
-        self.root.mainloop()
+    def keyPressEvent(self, event):
+        if (event.modifiers() & Qt.KeyboardModifier.AltModifier) and event.key() == Qt.Key.Key_Right:
+            cursor = self.textCursor()
+            table = cursor.currentTable()
+            if table:
+                cell = table.cellAt(cursor)
+                if cell.isValid():
+                    row = cell.row()
+                    col = cell.column()
+                    if col + 1 >= table.columns():
+                        table.insertColumns(col + 1, 1)
+                        text_color = self.palette().color(QPalette.ColorRole.Text)
+                        cell_fmt = QTextTableCellFormat()
+                        cell_fmt.setBorder(1)
+                        cell_fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+                        cell_fmt.setBorderBrush(text_color)
+                        for r in range(table.rows()):
+                            table.cellAt(r, col + 1).setFormat(cell_fmt)
+                    target = table.cellAt(row, col + 1).firstCursorPosition()
+                    self.setTextCursor(target)
+                    event.accept()
+                    return
+        if (event.modifiers() & Qt.KeyboardModifier.AltModifier) and event.key() == Qt.Key.Key_Left:
+            cursor = self.textCursor()
+            table = cursor.currentTable()
+            if table:
+                cell = table.cellAt(cursor)
+                if cell.isValid():
+                    row = cell.row()
+                    col = cell.column()
+                    if col - 1 < 0:
+                        table.insertColumns(0, 1)
+                        text_color = self.palette().color(QPalette.ColorRole.Text)
+                        cell_fmt = QTextTableCellFormat()
+                        cell_fmt.setBorder(1)
+                        cell_fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+                        cell_fmt.setBorderBrush(text_color)
+                        for r in range(table.rows()):
+                            table.cellAt(r, 0).setFormat(cell_fmt)
+                        target_col = 0
+                    else:
+                        target_col = col - 1
+                    target = table.cellAt(row, target_col).firstCursorPosition()
+                    self.setTextCursor(target)
+                    event.accept()
+                    return
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)) and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            cursor = self.textCursor()
+            table = cursor.currentTable()
+            if table:
+                cell = table.cellAt(cursor)
+                if cell.isValid():
+                    row = cell.row()
+                    col = cell.column()
+                    if row + 1 >= table.rows():
+                        table.insertRows(row + 1, 1)
+                        text_color = self.palette().color(QPalette.ColorRole.Text)
+                        cell_fmt = QTextTableCellFormat()
+                        cell_fmt.setBorder(1)
+                        cell_fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+                        cell_fmt.setBorderBrush(text_color)
+                        for c in range(table.columns()):
+                            table.cellAt(row + 1, c).setFormat(cell_fmt)
+                    target = table.cellAt(row + 1, col).firstCursorPosition()
+                    self.setTextCursor(target)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+    def mousePressEvent(self, event):
+        cursor = self.cursorForPosition(event.pos())
+        fmt = cursor.charFormat()
+        if fmt.isImageFormat() and event.button() == Qt.MouseButton.LeftButton:
+            name = fmt.property(QTextFormat.Property.ImageName)
+            w = fmt.property(QTextFormat.Property.ImageWidth)
+            h = fmt.property(QTextFormat.Property.ImageHeight)
+            if not w or not h:
+                try:
+                    img = QImage(name) if name else QImage()
+                    w = int(img.width()) if img and img.width() > 0 else 100
+                    h = int(img.height()) if img and img.height() > 0 else 100
+                except Exception:
+                    w, h = 100, 100
+            r = self.cursorRect(cursor)
+            ir = QRect(r.left(), r.top(), int(w), int(h))
+            br = QRect(ir.right() - self._img_handle_pad, ir.bottom() - self._img_handle_pad, self._img_handle_pad*2, self._img_handle_pad*2)
+            if br.contains(event.pos()):
+                self._img_resize_active = True
+                self._img_cursor_pos = cursor.position()
+                self._img_start_pos = event.pos()
+                self._img_initial_size = (int(w), int(h))
+                self._img_name = name
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+                event.accept()
+                return
+        block = cursor.block()
+        i = cursor.positionInBlock()
+        t = block.text()
+        if i < len(t):
+            ch = t[i]
+            if ch in ['☐', '☑']:
+                c = QTextCursor(block)
+                c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, i)
+                c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, 1)
+                new_ch = '☑' if ch == '☐' else '☐'
+                c.insertText(new_ch)
+                return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self, event):
+        if self._img_resize_active and self._img_cursor_pos is not None and self._img_initial_size is not None:
+            dx = max(1, event.pos().x() - self._img_start_pos.x())
+            dy = max(1, event.pos().y() - self._img_start_pos.y())
+            new_w = max(10, self._img_initial_size[0] + dx)
+            new_h = max(10, self._img_initial_size[1] + dy)
+            c = self.textCursor()
+            c.setPosition(self._img_cursor_pos)
+            fmt = c.charFormat()
+            if fmt.isImageFormat():
+                fmt.setProperty(QTextFormat.Property.ImageWidth, int(new_w))
+                fmt.setProperty(QTextFormat.Property.ImageHeight, int(new_h))
+                c.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, 1)
+                c.mergeCharFormat(fmt)
+                self.viewport().update()
+            event.accept()
+            return
+        cursor = self.cursorForPosition(event.pos())
+        fmt = cursor.charFormat()
+        if fmt.isImageFormat():
+            name = fmt.property(QTextFormat.Property.ImageName)
+            w = fmt.property(QTextFormat.Property.ImageWidth) or 100
+            h = fmt.property(QTextFormat.Property.ImageHeight) or 100
+            r = self.cursorRect(cursor)
+            ir = QRect(r.left(), r.top(), int(w), int(h))
+            br = QRect(ir.right() - self._img_handle_pad, ir.bottom() - self._img_handle_pad, self._img_handle_pad*2, self._img_handle_pad*2)
+            if br.contains(event.pos()):
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            else:
+                self.setCursor(Qt.CursorShape.IBeamCursor)
+        else:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self, event):
+        if self._img_resize_active:
+            self._img_resize_active = False
+            self._img_cursor_pos = None
+            self._img_start_pos = None
+            self._img_initial_size = None
+            self._img_name = None
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        super().mouseReleaseEvent(event)
 
-if __name__ == "__main__":
-    app = ModernNotepad()
-    app.run()
+
+class AdvancedNotepad(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.current_file = None
+        self.is_modified = False
+        self.zoom_level = 100
+        self.themes = {
+            "Light": {"bg": "#FFFFFF", "fg": "#000000"},
+            "Dark": {"bg": "#2B2B2B", "fg": "#A9B7C6"},
+            "Monokai": {"bg": "#272822", "fg": "#F8F8F2"},
+            "Solarized": {"bg": "#002B36", "fg": "#839496"}
+        }
+        self.python_temp_path = os.path.join(tempfile.gettempdir(), "advanced_notepad_temp.py")
+        self.r_temp_path = os.path.join(tempfile.gettempdir(), "advanced_notepad_temp.R")
+        self.session_dir = os.path.join(tempfile.gettempdir(), "advanced_notepad_session")
+        self.images_dir = os.path.join(self.session_dir, "images")
+        self.init_ui()
+        
+    def init_ui(self):
+        self.setWindowTitle("Ultra Advanced Notepad++")
+        self.setGeometry(100, 100, 1200, 800)
+        
+        # Create tab widget for multiple documents
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.currentChanged.connect(self.tab_changed)
+        self.setCentralWidget(self.tab_widget)
+        self.tab_widget.tabBar().installEventFilter(self)
+        
+        # Create status bar before creating the first tab
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        
+        self.restore_session_or_default()
+        
+        # Create menu bar
+        self.create_menus()
+        
+        # Create toolbar
+        self.create_toolbar()
+        
+        # Auto-save timer
+        self.auto_save_timer = QTimer()
+        self.auto_save_timer.timeout.connect(self.auto_save)
+        self.auto_save_timer.start(60000)  # Auto-save every 60 seconds
+        
+        self.update_status()
+        
+    def new_tab(self):
+        text_edit = RichTextEdit()
+        text_edit.setFont(QFont("Consolas", 11))
+        text_edit.textChanged.connect(self.text_changed)
+        text_edit.cursorPositionChanged.connect(self.update_status)
+        
+        # Enable drag and drop for images
+        text_edit.setAcceptDrops(True)
+        if hasattr(text_edit, "setLanguage"):
+            text_edit.setLanguage("Text")
+        text_edit.session_images_dir = self.images_dir
+        text_edit.setLineNumbersVisible(True)
+        index = self.tab_widget.addTab(text_edit, "Untitled")
+        self.tab_widget.setCurrentIndex(index)
+        return text_edit
+        
+    def current_tab(self):
+        w = self.tab_widget.currentWidget()
+        if hasattr(w, 'text_editor'):
+            return w.text_editor
+        return w
+        
+    def close_tab(self, index):
+        if self.tab_widget.count() > 1:
+            self.tab_widget.removeTab(index)
+        else:
+            self.close()
+            
+    def tab_changed(self, index):
+        self.update_status()
+    def eventFilter(self, obj, event):
+        if obj == self.tab_widget.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
+            idx = obj.tabAt(event.pos())
+            if idx >= 0:
+                current = self.tab_widget.tabText(idx)
+                name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", QLineEdit.EchoMode.Normal, current)
+                if ok:
+                    n = name.strip()
+                    if n:
+                        self.tab_widget.setTabText(idx, n)
+            return True
+        return super().eventFilter(obj, event)
+    def restore_session_or_default(self):
+        if not self.restore_session():
+            self.new_tab()
+    def restore_session(self):
+        try:
+            meta_path = os.path.join(self.session_dir, "session.json")
+            if not os.path.exists(meta_path):
+                return False
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            while self.tab_widget.count() > 0:
+                self.tab_widget.removeTab(0)
+            for item in data.get("tabs", []):
+                editor = self.new_tab()
+                idx = self.tab_widget.currentIndex()
+                self.tab_widget.setTabText(idx, item.get("title", "Untitled"))
+                lang = item.get("lang", "Text")
+                if hasattr(editor, "setLanguage"):
+                    editor.setLanguage(lang)
+                file_path = os.path.join(self.session_dir, item.get("file", ""))
+                if os.path.exists(file_path):
+                    with open(file_path, "r", encoding="utf-8") as rf:
+                        editor.setHtml(rf.read())
+            return True
+        except Exception:
+            return False
+    def save_session(self):
+        try:
+            os.makedirs(self.session_dir, exist_ok=True)
+            os.makedirs(self.images_dir, exist_ok=True)
+            tabs = []
+            for i in range(self.tab_widget.count()):
+                w = self.tab_widget.widget(i)
+                editor = w.text_editor if hasattr(w, "text_editor") else w
+                title = self.tab_widget.tabText(i)
+                lang = getattr(editor.highlighter, "language", "Text") if hasattr(editor, "highlighter") else "Text"
+                ext = "html"
+                safe = "".join([c if c.isalnum() or c in ("_", "-") else "_" for c in title]) or f"tab_{i}"
+                fname = f"{safe}_{i}.{ext}"
+                fpath = os.path.join(self.session_dir, fname)
+                html = editor.document().toHtml()
+                html = self._rewrite_html_img_src(html)
+                with open(fpath, "w", encoding="utf-8") as wf:
+                    wf.write(html)
+                tabs.append({"title": title, "lang": lang, "file": fname})
+            meta_path = os.path.join(self.session_dir, "session.json")
+            with open(meta_path, "w", encoding="utf-8") as mf:
+                json.dump({"tabs": tabs}, mf, indent=2)
+        except Exception:
+            pass
+
+    def _rewrite_html_img_src(self, html):
+        try:
+            os.makedirs(self.images_dir, exist_ok=True)
+            import re
+            from urllib.parse import urlparse, unquote
+            def repl(m):
+                src = m.group(1)
+                if src.startswith('data:'):
+                    return m.group(0)
+                p = src
+                try:
+                    u = urlparse(src)
+                    if u.scheme in ('file', ''):
+                        p = unquote(u.path) if u.scheme == 'file' else src
+                except Exception:
+                    p = src
+                if not os.path.isabs(p):
+                    p = src
+                if not os.path.exists(p):
+                    return m.group(0)
+                ext = os.path.splitext(p)[1] or '.png'
+                dest = os.path.join(self.images_dir, f"img_{uuid.uuid4().hex}{ext}")
+                try:
+                    shutil.copy2(p, dest)
+                    return f'src="{dest}"'
+                except Exception:
+                    return m.group(0)
+            return re.sub(r'src="([^"]+)"', repl, html)
+        except Exception:
+            return html
+        
+    def create_menus(self):
+        menubar = self.menuBar()
+        
+        # File Menu
+        file_menu = menubar.addMenu("&File")
+        
+        new_tab_action = QAction("New &Tab", self)
+        new_tab_action.setShortcut("Ctrl+T")
+        new_tab_action.triggered.connect(self.new_tab)
+        file_menu.addAction(new_tab_action)
+        
+        new_action = QAction("&New", self)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self.new_file)
+        file_menu.addAction(new_action)
+        
+        open_action = QAction("&Open", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self.open_file)
+        file_menu.addAction(open_action)
+        
+        save_action = QAction("&Save", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self.save_file)
+        file_menu.addAction(save_action)
+        
+        save_as_action = QAction("Save &As", self)
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self.save_file_as)
+        file_menu.addAction(save_as_action)
+        
+        file_menu.addSeparator()
+        
+        print_action = QAction("&Print", self)
+        print_action.setShortcut(QKeySequence.StandardKey.Print)
+        print_action.triggered.connect(self.print_document)
+        file_menu.addAction(print_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # Edit Menu
+        edit_menu = menubar.addMenu("&Edit")
+        
+        undo_action = QAction("&Undo", self)
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        undo_action.triggered.connect(lambda: self.current_tab().undo())
+        edit_menu.addAction(undo_action)
+        
+        redo_action = QAction("&Redo", self)
+        redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        redo_action.triggered.connect(lambda: self.current_tab().redo())
+        edit_menu.addAction(redo_action)
+        
+        edit_menu.addSeparator()
+        
+        cut_action = QAction("Cu&t", self)
+        cut_action.setShortcut(QKeySequence.StandardKey.Cut)
+        cut_action.triggered.connect(lambda: self.current_tab().cut())
+        edit_menu.addAction(cut_action)
+        
+        copy_action = QAction("&Copy", self)
+        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        copy_action.triggered.connect(lambda: self.current_tab().copy())
+        edit_menu.addAction(copy_action)
+        
+        paste_action = QAction("&Paste", self)
+        paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        paste_action.triggered.connect(lambda: self.current_tab().paste())
+        edit_menu.addAction(paste_action)
+        
+        edit_menu.addSeparator()
+        
+        select_all_action = QAction("Select &All", self)
+        select_all_action.setShortcut(QKeySequence.StandardKey.SelectAll)
+        select_all_action.triggered.connect(lambda: self.current_tab().selectAll())
+        edit_menu.addAction(select_all_action)
+        
+        edit_menu.addSeparator()
+        
+        find_replace_action = QAction("&Find and Replace", self)
+        find_replace_action.setShortcut("Ctrl+H")
+        find_replace_action.triggered.connect(self.open_find_replace)
+        edit_menu.addAction(find_replace_action)
+        
+        edit_menu.addSeparator()
+        
+        timestamp_action = QAction("Insert &Timestamp", self)
+        timestamp_action.setShortcut("F5")
+        timestamp_action.triggered.connect(self.insert_timestamp)
+        edit_menu.addAction(timestamp_action)
+        
+        # Format Menu
+        format_menu = menubar.addMenu("F&ormat")
+        
+        font_action = QAction("&Font", self)
+        font_action.triggered.connect(self.change_font)
+        format_menu.addAction(font_action)
+        
+        color_action = QAction("Text &Color", self)
+        color_action.triggered.connect(self.change_color)
+        format_menu.addAction(color_action)
+        
+        bg_color_action = QAction("&Background Color", self)
+        bg_color_action.triggered.connect(self.change_bg_color)
+        format_menu.addAction(bg_color_action)
+        
+        highlight_action = QAction("&Highlight Text", self)
+        highlight_action.triggered.connect(self.highlight_text)
+        format_menu.addAction(highlight_action)
+        
+        format_menu.addSeparator()
+        
+        bold_action = QAction("&Bold", self)
+        bold_action.setShortcut(QKeySequence.StandardKey.Bold)
+        bold_action.setCheckable(True)
+        bold_action.triggered.connect(self.toggle_bold)
+        format_menu.addAction(bold_action)
+        
+        italic_action = QAction("&Italic", self)
+        italic_action.setShortcut(QKeySequence.StandardKey.Italic)
+        italic_action.setCheckable(True)
+        italic_action.triggered.connect(self.toggle_italic)
+        format_menu.addAction(italic_action)
+        
+        underline_action = QAction("&Underline", self)
+        underline_action.setShortcut(QKeySequence.StandardKey.Underline)
+        underline_action.setCheckable(True)
+        underline_action.triggered.connect(self.toggle_underline)
+        format_menu.addAction(underline_action)
+        
+        strikethrough_action = QAction("&Strikethrough", self)
+        strikethrough_action.triggered.connect(self.toggle_strikethrough)
+        format_menu.addAction(strikethrough_action)
+        
+        format_menu.addSeparator()
+        
+        align_left_action = QAction("Align &Left", self)
+        align_left_action.triggered.connect(lambda: self.set_alignment(Qt.AlignmentFlag.AlignLeft))
+        format_menu.addAction(align_left_action)
+        
+        align_center_action = QAction("Align &Center", self)
+        align_center_action.triggered.connect(lambda: self.set_alignment(Qt.AlignmentFlag.AlignCenter))
+        format_menu.addAction(align_center_action)
+        
+        align_right_action = QAction("Align &Right", self)
+        align_right_action.triggered.connect(lambda: self.set_alignment(Qt.AlignmentFlag.AlignRight))
+        format_menu.addAction(align_right_action)
+        
+        align_justify_action = QAction("&Justify", self)
+        align_justify_action.triggered.connect(lambda: self.set_alignment(Qt.AlignmentFlag.AlignJustify))
+        format_menu.addAction(align_justify_action)
+        
+        format_menu.addSeparator()
+        
+        increase_indent_action = QAction("Increase Indent", self)
+        increase_indent_action.setShortcut("Ctrl+]")
+        increase_indent_action.triggered.connect(self.increase_indent)
+        format_menu.addAction(increase_indent_action)
+        
+        decrease_indent_action = QAction("Decrease Indent", self)
+        decrease_indent_action.setShortcut("Ctrl+[")
+        decrease_indent_action.triggered.connect(self.decrease_indent)
+        format_menu.addAction(decrease_indent_action)
+        
+        # Insert Menu
+        insert_menu = menubar.addMenu("&Insert")
+        
+        insert_image_action = QAction("Insert &Image", self)
+        insert_image_action.triggered.connect(self.insert_image)
+        insert_menu.addAction(insert_image_action)
+        
+        insert_table_action = QAction("Insert &Table", self)
+        insert_table_action.triggered.connect(self.insert_table)
+        insert_menu.addAction(insert_table_action)
+        insert_ascii_table_action = QAction("Insert Table with |", self)
+        insert_ascii_table_action.triggered.connect(self.insert_ascii_table)
+        insert_menu.addAction(insert_ascii_table_action)
+        
+        insert_checkbox_action = QAction("Insert &Checkbox", self)
+        insert_checkbox_action.triggered.connect(self.insert_checkbox)
+        insert_menu.addAction(insert_checkbox_action)
+        
+        insert_menu.addSeparator()
+        
+        bullet_list_action = QAction("&Bullet List", self)
+        bullet_list_action.triggered.connect(self.insert_bullet_list)
+        insert_menu.addAction(bullet_list_action)
+        
+        numbered_list_action = QAction("&Numbered List", self)
+        numbered_list_action.triggered.connect(self.insert_numbered_list)
+        insert_menu.addAction(numbered_list_action)
+        
+        insert_menu.addSeparator()
+        
+        horizontal_line_action = QAction("Horizontal &Line", self)
+        horizontal_line_action.triggered.connect(self.insert_horizontal_line)
+        insert_menu.addAction(horizontal_line_action)
+        
+        insert_link_action = QAction("Insert Lin&k", self)
+        insert_link_action.setShortcut("Ctrl+K")
+        insert_link_action.triggered.connect(self.insert_link)
+        insert_menu.addAction(insert_link_action)
+        
+        table_menu = menubar.addMenu("&Table")
+        row_above_action = QAction("Insert Row Above", self)
+        row_above_action.triggered.connect(self.table_insert_row_above)
+        table_menu.addAction(row_above_action)
+        row_below_action = QAction("Insert Row Below", self)
+        row_below_action.triggered.connect(self.table_insert_row_below)
+        table_menu.addAction(row_below_action)
+        del_row_action = QAction("Delete Row", self)
+        del_row_action.triggered.connect(self.table_delete_row)
+        table_menu.addAction(del_row_action)
+        table_menu.addSeparator()
+        col_left_action = QAction("Insert Column Left", self)
+        col_left_action.triggered.connect(self.table_insert_col_left)
+        table_menu.addAction(col_left_action)
+        col_right_action = QAction("Insert Column Right", self)
+        col_right_action.triggered.connect(self.table_insert_col_right)
+        table_menu.addAction(col_right_action)
+        del_col_action = QAction("Delete Column", self)
+        del_col_action.triggered.connect(self.table_delete_col)
+        table_menu.addAction(del_col_action)
+        table_menu.addSeparator()
+        autofit_action = QAction("Auto-fit Columns", self)
+        autofit_action.triggered.connect(self.table_autofit_columns)
+        table_menu.addAction(autofit_action)
+        
+        # View Menu
+        view_menu = menubar.addMenu("&View")
+        
+        stay_on_top_action = QAction("Always on &Top", self)
+        stay_on_top_action.setCheckable(True)
+        stay_on_top_action.triggered.connect(self.toggle_always_on_top)
+        view_menu.addAction(stay_on_top_action)
+        
+        fullscreen_action = QAction("&Fullscreen", self)
+        fullscreen_action.setShortcut("F11")
+        fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        view_menu.addAction(fullscreen_action)
+        
+        view_menu.addSeparator()
+        
+        word_wrap_action = QAction("&Word Wrap", self)
+        word_wrap_action.setCheckable(True)
+        word_wrap_action.setChecked(True)
+        word_wrap_action.triggered.connect(self.toggle_word_wrap)
+        view_menu.addAction(word_wrap_action)
+        
+        view_menu.addSeparator()
+        
+        zoom_in_action = QAction("Zoom &In", self)
+        zoom_in_action.setShortcut("Ctrl++")
+        zoom_in_action.triggered.connect(self.zoom_in)
+        view_menu.addAction(zoom_in_action)
+        
+        zoom_out_action = QAction("Zoom &Out", self)
+        zoom_out_action.setShortcut("Ctrl+-")
+        zoom_out_action.triggered.connect(self.zoom_out)
+        view_menu.addAction(zoom_out_action)
+        
+        reset_zoom_action = QAction("&Reset Zoom", self)
+        reset_zoom_action.setShortcut("Ctrl+0")
+        reset_zoom_action.triggered.connect(self.reset_zoom)
+        view_menu.addAction(reset_zoom_action)
+        
+        view_menu.addSeparator()
+        
+        # Theme submenu
+        theme_menu = view_menu.addMenu("&Theme")
+        for theme_name in self.themes.keys():
+            theme_action = QAction(theme_name, self)
+            theme_action.triggered.connect(lambda checked, t=theme_name: self.apply_theme(t))
+            theme_menu.addAction(theme_action)
+        
+        view_menu.addSeparator()
+        line_numbers_action = QAction("Show Line Numbers", self)
+        line_numbers_action.setCheckable(True)
+        line_numbers_action.setChecked(True)
+        line_numbers_action.triggered.connect(self.toggle_line_numbers)
+        view_menu.addAction(line_numbers_action)
+        language_menu = view_menu.addMenu("&Language")
+        for lang in ["Text","Python","R"]:
+            act = QAction(lang, self)
+            act.triggered.connect(lambda checked, l=lang: self.set_language(l))
+            language_menu.addAction(act)
+        
+        # Tools Menu
+        tools_menu = menubar.addMenu("&Tools")
+        
+        word_count_action = QAction("&Word Count", self)
+        word_count_action.triggered.connect(self.show_word_count)
+        tools_menu.addAction(word_count_action)
+        
+        char_count_action = QAction("&Character Count", self)
+        char_count_action.triggered.connect(self.show_char_count)
+        tools_menu.addAction(char_count_action)
+        
+        tools_menu.addSeparator()
+        
+        upper_case_action = QAction("Convert to &UPPERCASE", self)
+        upper_case_action.triggered.connect(self.convert_to_upper)
+        tools_menu.addAction(upper_case_action)
+        
+        lower_case_action = QAction("Convert to &lowercase", self)
+        lower_case_action.triggered.connect(self.convert_to_lower)
+        tools_menu.addAction(lower_case_action)
+        
+        title_case_action = QAction("Convert to &Title Case", self)
+        title_case_action.triggered.connect(self.convert_to_title)
+        tools_menu.addAction(title_case_action)
+        
+        tools_menu.addSeparator()
+        
+        remove_duplicates_action = QAction("Remove Duplicate &Lines", self)
+        remove_duplicates_action.triggered.connect(self.remove_duplicate_lines)
+        tools_menu.addAction(remove_duplicates_action)
+        
+        sort_lines_action = QAction("&Sort Lines A-Z", self)
+        sort_lines_action.triggered.connect(self.sort_lines)
+        tools_menu.addAction(sort_lines_action)
+        
+        tools_menu.addSeparator()
+        correct_action = QAction("&Correct Selection", self)
+        correct_action.triggered.connect(self.correct_selection)
+        tools_menu.addAction(correct_action)
+        tools_menu.addSeparator()
+        run_menu_action = QAction("▶ &Run", self)
+        run_menu_action.triggered.connect(self.run_current)
+        tools_menu.addAction(run_menu_action)
+        run_sel_menu_action = QAction("▶ Run &Selection", self)
+        run_sel_menu_action.triggered.connect(self.run_selection)
+        tools_menu.addAction(run_sel_menu_action)
+        samples_action = QAction("Create &Sample Files", self)
+        samples_action.triggered.connect(self.create_sample_files)
+        tools_menu.addAction(samples_action)
+        
+    def create_toolbar(self):
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        
+        # File operations
+        new_btn = QAction("📄 New", self)
+        new_btn.triggered.connect(self.new_file)
+        toolbar.addAction(new_btn)
+        
+        open_btn = QAction("📂 Open", self)
+        open_btn.triggered.connect(self.open_file)
+        toolbar.addAction(open_btn)
+        
+        save_btn = QAction("💾 Save", self)
+        save_btn.triggered.connect(self.save_file)
+        toolbar.addAction(save_btn)
+        
+        toolbar.addSeparator()
+        
+        # Format operations
+        bold_btn = QAction("B", self)
+        bold_btn.triggered.connect(self.toggle_bold)
+        toolbar.addAction(bold_btn)
+        
+        italic_btn = QAction("I", self)
+        italic_btn.triggered.connect(self.toggle_italic)
+        toolbar.addAction(italic_btn)
+        
+        underline_btn = QAction("U", self)
+        underline_btn.triggered.connect(self.toggle_underline)
+        toolbar.addAction(underline_btn)
+        
+        toolbar.addSeparator()
+        
+        # Insert operations
+        image_btn = QAction("🖼️ Image", self)
+        image_btn.triggered.connect(self.insert_image)
+        toolbar.addAction(image_btn)
+        
+        table_btn = QAction("📊 Table", self)
+        table_btn.triggered.connect(self.insert_table)
+        toolbar.addAction(table_btn)
+        
+        checkbox_btn = QAction("☐ Check", self)
+        checkbox_btn.triggered.connect(self.insert_checkbox)
+        toolbar.addAction(checkbox_btn)
+        
+        toolbar.addSeparator()
+        
+        # Zoom controls
+        zoom_out_btn = QAction("🔍-", self)
+        zoom_out_btn.triggered.connect(self.zoom_out)
+        toolbar.addAction(zoom_out_btn)
+        
+        zoom_in_btn = QAction("🔍+", self)
+        zoom_in_btn.triggered.connect(self.zoom_in)
+        toolbar.addAction(zoom_in_btn)
+        toolbar.addSeparator()
+        run_btn = QAction("▶ Run", self)
+        run_btn.triggered.connect(self.run_current)
+        toolbar.addAction(run_btn)
+        run_sel_btn = QAction("▶ Run Selection", self)
+        run_sel_btn.triggered.connect(self.run_selection)
+        toolbar.addAction(run_sel_btn)
+        
+    def text_changed(self):
+        self.is_modified = True
+        self.update_title()
+        try:
+            editor = self.current_tab()
+            lang = getattr(editor.highlighter, 'language', 'Text') if hasattr(editor, 'highlighter') else 'Text'
+            if lang == 'Python':
+                with open(self.python_temp_path, 'w', encoding='utf-8') as f:
+                    f.write(editor.toPlainText())
+        except Exception:
+            pass
+        
+    def update_title(self):
+        title = "Ultra Advanced Notepad++"
+        if self.current_file:
+            title += f" - {self.current_file}"
+        if self.is_modified:
+            title += " *"
+        self.setWindowTitle(title)
+        
+    def update_status(self):
+        text_edit = self.current_tab()
+        if text_edit:
+            cursor = text_edit.textCursor()
+            line = cursor.blockNumber() + 1
+            col = cursor.columnNumber() + 1
+            chars = len(text_edit.toPlainText())
+            words = len(text_edit.toPlainText().split())
+            self.status_bar.showMessage(
+                f"Line: {line}, Col: {col} | Words: {words} | Characters: {chars} | Zoom: {self.zoom_level}%"
+            )
+        
+    def new_file(self):
+        self.new_tab()
+            
+    def open_file(self):
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Open File", "", 
+            "All Files (*.*)"
+        )
+        if not filename:
+            return False
+        try:
+            editor = self.new_tab()
+            lower = filename.lower()
+            if lower.endswith(('.csv', '.tsv', '.txt')):
+                tmp = os.path.join(self.session_dir, f"duckdb_{os.path.basename(filename)}.pipe")
+                os.makedirs(self.session_dir, exist_ok=True)
+                try:
+                    if duckdb:
+                        con = duckdb.connect()
+                        con.execute(f"COPY (SELECT * FROM read_csv_auto('{filename}')) TO '{tmp}' (DELIMITER '|', HEADER TRUE)")
+                    else:
+                        raise Exception('duckdb not available')
+                except Exception:
+                    import csv
+                    with open(filename, 'r', encoding='utf-8', errors='replace', newline='') as fin, open(tmp, 'w', encoding='utf-8', newline='') as fout:
+                        sample = fin.read(4096)
+                        fin.seek(0)
+                        try:
+                            dialect = csv.Sniffer().sniff(sample)
+                        except Exception:
+                            dialect = csv.excel
+                        reader = csv.reader(fin, dialect)
+                        w = csv.writer(fout, delimiter='|')
+                        for row in reader:
+                            w.writerow(row)
+                aligned = self._align_pipe_file(tmp)
+                with open(aligned, 'r', encoding='utf-8', errors='replace') as f:
+                    editor.setPlainText(f.read())
+                try:
+                    os.remove(tmp)
+                    os.remove(aligned)
+                except Exception:
+                    pass
+            elif lower.endswith(('.parquet', '.parq')):
+                tmp = os.path.join(self.session_dir, f"duckdb_{os.path.basename(filename)}.pipe")
+                os.makedirs(self.session_dir, exist_ok=True)
+                try:
+                    if duckdb:
+                        con = duckdb.connect()
+                        con.execute(f"COPY (SELECT * FROM read_parquet('{filename}')) TO '{tmp}' (DELIMITER '|', HEADER TRUE)")
+                    elif pl:
+                        df = pl.read_parquet(filename)
+                        df.write_csv(tmp, separator='|')
+                    else:
+                        raise Exception('No parquet loader available')
+                except Exception as e:
+                    QMessageBox.critical(self, 'Open', f'Failed to load parquet:\n{e}')
+                    self.tab_widget.removeTab(self.tab_widget.currentIndex())
+                    return False
+                aligned = self._align_pipe_file(tmp)
+                with open(aligned, 'r', encoding='utf-8', errors='replace') as f:
+                    editor.setPlainText(f.read())
+                try:
+                    os.remove(tmp)
+                    os.remove(aligned)
+                except Exception:
+                    pass
+            elif lower.endswith(('.xlsx', '.xls')) and pl:
+                df = pl.read_excel(filename)
+                tmp = os.path.join(self.session_dir, f"polars_{os.path.basename(filename)}.pipe")
+                os.makedirs(self.session_dir, exist_ok=True)
+                df.write_csv(tmp, separator='|')
+                aligned = self._align_pipe_file(tmp)
+                with open(aligned, 'r', encoding='utf-8', errors='replace') as f:
+                    editor.setPlainText(f.read())
+                try:
+                    os.remove(tmp)
+                    os.remove(aligned)
+                except Exception:
+                    pass
+            elif lower.endswith(('.json', '.ndjson', '.jsonl')):
+                with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+                    raw = f.read()
+                try:
+                    obj = json.loads(raw)
+                    editor.setPlainText(json.dumps(obj, indent=2, ensure_ascii=False))
+                except Exception:
+                    lines = []
+                    for line in raw.splitlines():
+                        try:
+                            lines.append(json.dumps(json.loads(line), indent=2, ensure_ascii=False))
+                        except Exception:
+                            lines.append(line)
+                    editor.setPlainText("\n".join(lines))
+            elif lower.endswith(('.pdf')) and PdfReader:
+                reader = PdfReader(filename)
+                pages = []
+                for p in reader.pages:
+                    pages.append(p.extract_text() or '')
+                editor.setPlainText("\n\n".join(pages))
+            else:
+                with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if lower.endswith(('.html', '.htm')):
+                    editor.setHtml(content)
+                else:
+                    editor.setPlainText(content)
+            if lower.endswith('.py') and hasattr(editor, 'setLanguage'):
+                editor.setLanguage('Python')
+            elif lower.endswith('.r') and hasattr(editor, 'setLanguage'):
+                editor.setLanguage('R')
+            elif lower.endswith('.md') and hasattr(editor, 'setLanguage'):
+                editor.setLanguage('Text')
+            self.current_file = filename
+            self.is_modified = False
+            self.tab_widget.setTabText(self.tab_widget.currentIndex(), os.path.basename(filename))
+            self.update_title()
+            self.status_bar.showMessage("File opened successfully", 3000)
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not open file:\n{e}")
+            return False
+
+    def _align_pipe_file(self, src_path):
+        try:
+            dst = src_path + ".mdtbl"
+            with open(src_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.read().splitlines()
+            if not lines:
+                with open(dst, 'w', encoding='utf-8') as out:
+                    out.write('')
+                return dst
+            header = lines[0].split('|')
+            widths = [len(h) for h in header]
+            sample_count = min(len(lines), 1000)
+            for i in range(1, sample_count):
+                cells = lines[i].split('|')
+                for j in range(min(len(widths), len(cells))):
+                    w = len(cells[j])
+                    if w > widths[j]:
+                        widths[j] = w
+            def fmt_row(cells):
+                padded = []
+                for j in range(len(widths)):
+                    val = cells[j] if j < len(cells) else ''
+                    padded.append(val.ljust(widths[j]))
+                return '| ' + ' | '.join(padded) + ' |\n'
+            with open(dst, 'w', encoding='utf-8') as out:
+                out.write(fmt_row(header))
+                out.write('| ' + ' | '.join(['-' * w for w in widths]) + ' |\n')
+                for i in range(1, len(lines)):
+                    out.write(fmt_row(lines[i].split('|')))
+            return dst
+        except Exception:
+            return src_path
+    
+    def save_file(self):
+        if self.current_file:
+            return self.save_to_file(self.current_file)
+        else:
+            return self.save_file_as()
+    
+    def save_file_as(self):
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save File", "", 
+            "HTML Files (*.html);;Text Files (*.txt);;All Files (*.*)"
+        )
+        if filename:
+            return self.save_to_file(filename)
+        return False
+    
+    def save_to_file(self, filename):
+        try:
+            text_edit = self.current_tab()
+            with open(filename, 'w', encoding='utf-8') as f:
+                if filename.lower().endswith('.html'):
+                    f.write(text_edit.toHtml())
+                else:
+                    f.write(text_edit.toPlainText())
+            self.current_file = filename
+            self.is_modified = False
+            self.tab_widget.setTabText(self.tab_widget.currentIndex(), os.path.basename(filename))
+            self.update_title()
+            self.status_bar.showMessage("File saved successfully", 3000)
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save file:\n{e}")
+            return False
+    
+    def auto_save(self):
+        if self.is_modified and self.current_file:
+            self.save_to_file(self.current_file)
+            
+    def maybe_save(self):
+        if self.is_modified:
+            reply = QMessageBox.question(
+                self, "Save Changes?",
+                "Do you want to save changes to the document?",
+                QMessageBox.StandardButton.Save | 
+                QMessageBox.StandardButton.Discard | 
+                QMessageBox.StandardButton.Cancel
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                return self.save_file()
+            elif reply == QMessageBox.StandardButton.Cancel:
+                return False
+        return True
+        
+    def closeEvent(self, event):
+        self.save_session()
+        event.accept()
+            
+    def print_document(self):
+        printer = QPrinter()
+        dialog = QPrintDialog(printer, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.current_tab().print(printer)
+            
+    def change_font(self):
+        font, ok = QFontDialog.getFont(self.current_tab().currentFont(), self)
+        if ok:
+            self.current_tab().setCurrentFont(font)
+            
+    def change_color(self):
+        color = QColorDialog.getColor(self.current_tab().textColor(), self)
+        if color.isValid():
+            self.current_tab().setTextColor(color)
+            
+    def change_bg_color(self):
+        color = QColorDialog.getColor(self.current_tab().textBackgroundColor(), self)
+        if color.isValid():
+            self.current_tab().setTextBackgroundColor(color)
+    
+    def highlight_text(self):
+        color = QColorDialog.getColor(Qt.GlobalColor.yellow, self)
+        if color.isValid():
+            cursor = self.current_tab().textCursor()
+            if cursor.hasSelection():
+                fmt = QTextCharFormat()
+                fmt.setBackground(color)
+                cursor.mergeCharFormat(fmt)
+            
+    def toggle_bold(self):
+        fmt = self.current_tab().currentCharFormat()
+        weight = QFont.Weight.Bold if fmt.fontWeight() != QFont.Weight.Bold else QFont.Weight.Normal
+        fmt.setFontWeight(weight)
+        self.current_tab().setCurrentCharFormat(fmt)
+        
+    def toggle_italic(self):
+        fmt = self.current_tab().currentCharFormat()
+        fmt.setFontItalic(not fmt.fontItalic())
+        self.current_tab().setCurrentCharFormat(fmt)
+        
+    def toggle_underline(self):
+        fmt = self.current_tab().currentCharFormat()
+        fmt.setFontUnderline(not fmt.fontUnderline())
+        self.current_tab().setCurrentCharFormat(fmt)
+    
+    def toggle_strikethrough(self):
+        fmt = self.current_tab().currentCharFormat()
+        fmt.setFontStrikeOut(not fmt.fontStrikeOut())
+        self.current_tab().setCurrentCharFormat(fmt)
+    
+    def set_alignment(self, alignment):
+        self.current_tab().setAlignment(alignment)
+    
+    def increase_indent(self):
+        cursor = self.current_tab().textCursor()
+        block_format = cursor.blockFormat()
+        block_format.setIndent(block_format.indent() + 1)
+        cursor.setBlockFormat(block_format)
+    
+    def decrease_indent(self):
+        cursor = self.current_tab().textCursor()
+        block_format = cursor.blockFormat()
+        indent = max(0, block_format.indent() - 1)
+        block_format.setIndent(indent)
+        cursor.setBlockFormat(block_format)
+        
+    def open_find_replace(self):
+        dialog = FindReplaceDialog(self)
+        dialog.show()
+    
+    def insert_timestamp(self):
+        cursor = self.current_tab().textCursor()
+        timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+        cursor.insertText(timestamp)
+        
+    def insert_image(self):
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Insert Image", "", 
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*.*)"
+        )
+        if filename:
+            cursor = self.current_tab().textCursor()
+            image = QImage(filename)
+            if not image.isNull():
+                max_width = 600
+                if image.width() > max_width:
+                    image = image.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
+                
+                image_format = QTextImageFormat()
+                image_format.setName(filename)
+                image_format.setWidth(image.width())
+                image_format.setHeight(image.height())
+                cursor.insertImage(image_format)
+            else:
+                QMessageBox.warning(self, "Error", "Could not load image")
+                
+    def insert_table(self):
+        dialog = TableDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            rows = dialog.rows_spin.value()
+            cols = dialog.cols_spin.value()
+            
+            cursor = self.current_tab().textCursor()
+            table_format = QTextTableFormat()
+            table_format.setBorder(2)
+            table_format.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+            table_format.setCellPadding(4)
+            table_format.setCellSpacing(0)
+            table_format.setTopMargin(4)
+            table_format.setBottomMargin(12)
+            text_color = self.current_tab().palette().color(QPalette.ColorRole.Text)
+            table_format.setBorderBrush(text_color)
+            cursor.insertTable(rows, cols, table_format)
+            table = cursor.currentTable()
+            if table:
+                self._format_table_grid(table)
+
+    def insert_ascii_table(self):
+        dialog = TableDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            rows = dialog.rows_spin.value()
+            cols = dialog.cols_spin.value()
+            header = "|" + "|".join(["   " for _ in range(cols)]) + "|\n"
+            divider = "|" + "|".join(["---" for _ in range(cols)]) + "|\n"
+            body_lines = []
+            for _ in range(max(1, rows)):
+                body_lines.append("|" + "|".join(["   " for _ in range(cols)]) + "|")
+            text = header + divider + "\n".join(body_lines) + "\n"
+            self.current_tab().textCursor().insertText(text)
+            
+    def table_insert_row_above(self):
+        cursor = self.current_tab().textCursor()
+        table = cursor.currentTable()
+        if table:
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.insertRows(cell.row(), 1)
+                self._format_table_grid(table)
+            else:
+                QMessageBox.information(self, "Table", "Place the cursor inside a table cell")
+        else:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            
+    def table_insert_row_below(self):
+        cursor = self.current_tab().textCursor()
+        table = cursor.currentTable()
+        if table:
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.insertRows(cell.row() + 1, 1)
+                self._format_table_grid(table)
+            else:
+                QMessageBox.information(self, "Table", "Place the cursor inside a table cell")
+        else:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            
+    def table_delete_row(self):
+        cursor = self.current_tab().textCursor()
+        table = cursor.currentTable()
+        if table:
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.removeRows(cell.row(), 1)
+                self._format_table_grid(table)
+            else:
+                QMessageBox.information(self, "Table", "Place the cursor inside a table cell")
+        else:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            
+    def table_insert_col_left(self):
+        cursor = self.current_tab().textCursor()
+        table = cursor.currentTable()
+        if table:
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.insertColumns(cell.column(), 1)
+                self._format_table_grid(table)
+            else:
+                QMessageBox.information(self, "Table", "Place the cursor inside a table cell")
+        else:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            
+    def table_insert_col_right(self):
+        cursor = self.current_tab().textCursor()
+        table = cursor.currentTable()
+        if table:
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.insertColumns(cell.column() + 1, 1)
+                self._format_table_grid(table)
+            else:
+                QMessageBox.information(self, "Table", "Place the cursor inside a table cell")
+        else:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            
+    def table_delete_col(self):
+        cursor = self.current_tab().textCursor()
+        table = cursor.currentTable()
+        if table:
+            cell = table.cellAt(cursor)
+            if cell.isValid():
+                table.removeColumns(cell.column(), 1)
+                self._format_table_grid(table)
+            else:
+                QMessageBox.information(self, "Table", "Place the cursor inside a table cell")
+        else:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            
+    def table_autofit_columns(self):
+        text_edit = self.current_tab()
+        cursor = text_edit.textCursor()
+        table = cursor.currentTable()
+        if not table:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table")
+            return
+        rows = table.rows()
+        cols = table.columns()
+        fm = text_edit.fontMetrics()
+        col_widths = [0] * cols
+        for c in range(cols):
+            maxw = 0
+            for r in range(rows):
+                cell = table.cellAt(r, c)
+                c1 = cell.firstCursorPosition()
+                c2 = cell.lastCursorPosition()
+                tmp = c1
+                tmp.setPosition(c2.position(), QTextCursor.MoveMode.KeepAnchor)
+                s = tmp.selectedText()
+                w = fm.horizontalAdvance(s) + 16
+                if w > maxw:
+                    maxw = w
+            col_widths[c] = maxw
+        total = float(sum(col_widths)) if sum(col_widths) > 0 else float(cols)
+        constraints = []
+        for w in col_widths:
+            percent = max(5.0, (w / total) * 100.0)
+            constraints.append(QTextLength(QTextLength.Type.PercentageLength, percent))
+        fmt = table.format()
+        fmt.setColumnWidthConstraints(constraints)
+        table.setFormat(fmt)
+        self._format_table_grid(table)
+
+    def _format_table_grid(self, table):
+        text_color = self.current_tab().palette().color(QPalette.ColorRole.Text)
+        fmt = table.format()
+        fmt.setBorder(2)
+        fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+        fmt.setCellPadding(4)
+        fmt.setCellSpacing(0)
+        fmt.setTopMargin(4)
+        fmt.setBottomMargin(12)
+        fmt.setBorderBrush(text_color)
+        table.setFormat(fmt)
+        cell_fmt = QTextTableCellFormat()
+        cell_fmt.setBorder(1)
+        cell_fmt.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+        cell_fmt.setBorderBrush(text_color)
+        rows = table.rows()
+        cols = table.columns()
+        for r in range(rows):
+            for c in range(cols):
+                cell = table.cellAt(r, c)
+                cell.setFormat(cell_fmt)
+            
+    def insert_checkbox(self):
+        cursor = self.current_tab().textCursor()
+        cursor.insertText("☐ ")
+            
+    def insert_bullet_list(self):
+        cursor = self.current_tab().textCursor()
+        list_format = QTextListFormat()
+        list_format.setStyle(QTextListFormat.Style.ListDisc)
+        cursor.createList(list_format)
+        
+    def insert_numbered_list(self):
+        cursor = self.current_tab().textCursor()
+        list_format = QTextListFormat()
+        list_format.setStyle(QTextListFormat.Style.ListDecimal)
+        cursor.createList(list_format)
+    
+    def insert_horizontal_line(self):
+        cursor = self.current_tab().textCursor()
+        cursor.insertHtml("<hr>")
+    
+    def insert_link(self):
+        text, ok1 = QInputDialog.getText(self, "Insert Link", "Link text:")
+        if ok1 and text:
+            url, ok2 = QInputDialog.getText(self, "Insert Link", "URL:")
+            if ok2 and url:
+                cursor = self.current_tab().textCursor()
+                cursor.insertHtml(f'<a href="{url}">{text}</a>')
+        
+    def toggle_always_on_top(self, checked):
+        if checked:
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
+        self.show()
+    
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+        
+    def toggle_word_wrap(self, checked):
+        if checked:
+            self.current_tab().setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        else:
+            self.current_tab().setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+    
+    def toggle_line_numbers(self, checked):
+        editor = self.current_tab()
+        if hasattr(editor, "setLineNumbersVisible"):
+            editor.setLineNumbersVisible(checked)
+    
+    def set_language(self, language):
+        editor = self.current_tab()
+        if hasattr(editor, "setLanguage"):
+            editor.setLanguage(language)
+        self._close_dev_view_if_present()
+    
+    def _close_dev_view_if_present(self):
+        idx = self.tab_widget.currentIndex()
+        w = self.tab_widget.widget(idx)
+        if hasattr(w, 'text_editor'):
+            title = self.tab_widget.tabText(idx)
+            editor = w.text_editor
+            proc = getattr(w, 'process', None)
+            try:
+                if proc and proc.state() != QProcess.ProcessState.NotRunning:
+                    proc.kill()
+                    proc.waitForFinished(1000)
+            except Exception:
+                pass
+            self.tab_widget.removeTab(idx)
+            self.tab_widget.insertTab(idx, editor, title)
+            self.tab_widget.setCurrentIndex(idx)
+    
+    def open_dev_view(self, language):
+        idx = self.tab_widget.currentIndex()
+        title = self.tab_widget.tabText(idx)
+        editor = self.current_tab()
+        parent_widget = self.tab_widget.widget(idx)
+        if hasattr(parent_widget, 'text_editor'):
+            container_old = parent_widget
+            proc_old = getattr(container_old, 'process', None)
+            if proc_old and proc_old.state() != QProcess.ProcessState.NotRunning:
+                proc_old.kill()
+                proc_old.waitForFinished(2000)
+            if hasattr(editor, 'setLanguage'):
+                editor.setLanguage(language)
+            splitter = getattr(container_old, 'splitter', None)
+            term_widget = getattr(container_old, 'term_widget', None)
+            if splitter and term_widget:
+                splitter.insertWidget(0, editor)
+                splitter.insertWidget(1, term_widget)
+                splitter.setStretchFactor(0, 4)
+                splitter.setStretchFactor(1, 1)
+                h = max(400, self.height())
+                QTimer.singleShot(0, lambda: splitter.setSizes([int(h*0.8), int(h*0.2)]))
+            proc = getattr(container_old, 'process', None)
+            if language == "Python" and proc:
+                proc.start('python', ['-i', '-u', '-q'])
+            elif language == "R" and proc:
+                candidates = ['R', 'Rterm.exe', 'R.exe']
+                exe = None
+                for c in candidates:
+                    if shutil.which(c):
+                        exe = c
+                        break
+                if exe:
+                    args = ['--no-save', '--quiet'] if 'Rterm' in exe else ['--vanilla', '--quiet']
+                    proc.start(exe, args)
+                else:
+                    QMessageBox.information(self, 'R', 'R interpreter not found on PATH')
+            return
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(editor)
+        term_widget = QWidget()
+        term_layout = QVBoxLayout(term_widget)
+        out_view = QPlainTextEdit()
+        out_view.setReadOnly(True)
+        out_view.setMinimumHeight(120)
+        in_line = QLineEdit()
+        in_line.setMinimumHeight(28)
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        def append_output():
+            data = proc.readAllStandardOutput().data().decode('utf-8', errors='replace')
+            out_view.appendPlainText(data)
+        proc.readyReadStandardOutput.connect(append_output)
+        in_line.returnPressed.connect(lambda: proc.write((in_line.text() + '\n').encode('utf-8')))
+        term_layout.addWidget(out_view)
+        term_layout.addWidget(in_line)
+        splitter.addWidget(term_widget)
+        splitter.insertWidget(0, editor)
+        try:
+            editor.setMinimumHeight(300)
+        except Exception:
+            pass
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
+        h = max(400, self.height())
+        QTimer.singleShot(0, lambda: splitter.setSizes([int(h*0.8), int(h*0.2)]))
+        layout.addWidget(splitter)
+        container.text_editor = editor
+        container.process = proc
+        container.output = out_view
+        container.input = in_line
+        container.splitter = splitter
+        container.term_widget = term_widget
+        self.tab_widget.removeTab(idx)
+        self.tab_widget.insertTab(idx, container, title)
+        self.tab_widget.setCurrentIndex(idx)
+        if language == "Python":
+            if proc.state() == QProcess.ProcessState.NotRunning:
+                proc.start('python', ['-i', '-u', '-q'])
+        elif language == "R":
+            candidates = ['R', 'Rterm.exe', 'R.exe']
+            exe = None
+            for c in candidates:
+                if shutil.which(c):
+                    exe = c
+                    break
+            if exe:
+                args = ['--no-save', '--quiet'] if 'Rterm' in exe else ['--vanilla', '--quiet']
+                proc.start(exe, args)
+            else:
+                QMessageBox.information(self, 'R', 'R interpreter not found on PATH')
+    
+    def zoom_in(self):
+        self.zoom_level += 10
+        self.current_tab().zoomIn(1)
+        self.update_status()
+    
+    def zoom_out(self):
+        if self.zoom_level > 20:
+            self.zoom_level -= 10
+            self.current_tab().zoomOut(1)
+            self.update_status()
+    
+    def reset_zoom(self):
+        # Reset to 100%
+        while self.zoom_level > 100:
+            self.current_tab().zoomOut(1)
+            self.zoom_level -= 10
+        while self.zoom_level < 100:
+            self.current_tab().zoomIn(1)
+            self.zoom_level += 10
+        self.update_status()
+    
+    def apply_theme(self, theme_name):
+        theme = self.themes.get(theme_name, self.themes["Light"])
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Base, QColor(theme["bg"]))
+        palette.setColor(QPalette.ColorRole.Text, QColor(theme["fg"]))
+        self.current_tab().setPalette(palette)
+        self.status_bar.showMessage(f"Applied {theme_name} theme", 2000)
+    
+    def show_word_count(self):
+        text = self.current_tab().toPlainText()
+        words = len(text.split())
+        QMessageBox.information(self, "Word Count", f"Total words: {words}")
+    
+    def show_char_count(self):
+        text = self.current_tab().toPlainText()
+        chars = len(text)
+        chars_no_space = len(text.replace(" ", "").replace("\n", ""))
+        QMessageBox.information(self, "Character Count", 
+                              f"Total characters: {chars}\nWithout spaces: {chars_no_space}")
+    
+    def convert_to_upper(self):
+        cursor = self.current_tab().textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText()
+            cursor.insertText(text.upper())
+        else:
+            text = self.current_tab().toPlainText()
+            self.current_tab().setPlainText(text.upper())
+    
+    def convert_to_lower(self):
+        cursor = self.current_tab().textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText()
+            cursor.insertText(text.lower())
+        else:
+            text = self.current_tab().toPlainText()
+            self.current_tab().setPlainText(text.lower())
+    
+    def convert_to_title(self):
+        cursor = self.current_tab().textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText()
+            cursor.insertText(text.title())
+        else:
+            text = self.current_tab().toPlainText()
+            self.current_tab().setPlainText(text.title())
+    
+    def remove_duplicate_lines(self):
+        text = self.current_tab().toPlainText()
+        lines = text.split('\n')
+        unique_lines = []
+        seen = set()
+        for line in lines:
+            if line not in seen:
+                unique_lines.append(line)
+                seen.add(line)
+        self.current_tab().setPlainText('\n'.join(unique_lines))
+        self.status_bar.showMessage(f"Removed {len(lines) - len(unique_lines)} duplicate lines", 3000)
+    
+    def sort_lines(self):
+        text = self.current_tab().toPlainText()
+        lines = text.split('\n')
+        sorted_lines = sorted(lines)
+        self.current_tab().setPlainText('\n'.join(sorted_lines))
+        self.status_bar.showMessage("Lines sorted alphabetically", 2000)
+
+    def correct_selection(self):
+        editor = self.current_tab()
+        if not hasattr(editor, 'highlighter'):
+            return
+        lang = getattr(editor.highlighter, 'language', 'Plain Text')
+        cursor = editor.textCursor()
+        if cursor.hasSelection():
+            raw = cursor.selectedText()
+        else:
+            raw = editor.toPlainText()
+        s = raw.replace('\u2029', '\n')
+        corrected = s
+        if cursor.hasSelection():
+            cursor.insertText(corrected)
+        else:
+            editor.setPlainText(corrected)
+        self.status_bar.showMessage('Selection corrected', 2000)
+
+    
+
+    def get_current_language(self):
+        editor = self.current_tab()
+        return getattr(editor.highlighter, 'language', 'Text') if hasattr(editor, 'highlighter') else 'Text'
+
+    def show_run_output(self, text, title='Run Output'):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        v = QVBoxLayout(dlg)
+        out = QPlainTextEdit()
+        out.setReadOnly(True)
+        out.setPlainText(text)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(dlg.reject)
+        v.addWidget(out)
+        v.addWidget(btns)
+        dlg.resize(800, 500)
+        dlg.exec()
+
+    def run_current(self):
+        editor = self.current_tab()
+        lang = self.get_current_language()
+        text = editor.toPlainText()
+        if lang == 'Python':
+            try:
+                with open(self.python_temp_path, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                proc = subprocess.run(['python', self.python_temp_path], capture_output=True, text=True)
+                self.show_run_output(proc.stdout + proc.stderr, 'Python Run')
+            except Exception as e:
+                QMessageBox.warning(self, 'Run', str(e))
+        elif lang == 'R':
+            try:
+                with open(self.r_temp_path, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                exe = shutil.which('Rscript') or shutil.which('Rscript.exe')
+                if exe:
+                    args = [exe, self.r_temp_path]
+                else:
+                    exe = shutil.which('R') or shutil.which('R.exe') or shutil.which('Rterm.exe')
+                    if not exe:
+                        QMessageBox.information(self, 'Run', 'Rscript not found')
+                        return
+                    args = [exe, '--vanilla', '--quiet', '-f', self.r_temp_path]
+                proc = subprocess.run(args, capture_output=True, text=True)
+                self.show_run_output(proc.stdout + proc.stderr, 'R Run')
+            except Exception as e:
+                QMessageBox.warning(self, 'Run', str(e))
+        else:
+            QMessageBox.information(self, 'Run', 'Select Python or R language')
+
+    def run_selection(self):
+        editor = self.current_tab()
+        lang = self.get_current_language()
+        cursor = editor.textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText().replace('\u2029', '\n')
+        else:
+            text = editor.toPlainText()
+        if lang == 'Python':
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.py', mode='w', encoding='utf-8') as tf:
+                    tf.write(text)
+                    path = tf.name
+                proc = subprocess.run(['python', path], capture_output=True, text=True)
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+                self.show_run_output(proc.stdout + proc.stderr, 'Python Selection')
+            except Exception as e:
+                QMessageBox.warning(self, 'Run', str(e))
+        elif lang == 'R':
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.R', mode='w', encoding='utf-8') as tf:
+                    tf.write(text)
+                    path = tf.name
+                exe = shutil.which('Rscript') or shutil.which('Rscript.exe')
+                if exe:
+                    args = [exe, path]
+                else:
+                    exe = shutil.which('R') or shutil.which('R.exe') or shutil.which('Rterm.exe')
+                    if not exe:
+                        QMessageBox.information(self, 'Run', 'Rscript not found')
+                        return
+                    args = [exe, '--vanilla', '--quiet', '-f', path]
+                proc = subprocess.run(args, capture_output=True, text=True)
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+                self.show_run_output(proc.stdout + proc.stderr, 'R Selection')
+            except Exception as e:
+                QMessageBox.warning(self, 'Run', str(e))
+        else:
+            QMessageBox.information(self, 'Run', 'Select Python or R language')
+
+    def create_sample_files(self):
+        os.makedirs(self.session_dir, exist_ok=True)
+        samples = []
+        csv_path = os.path.join(self.session_dir, 'sample.csv')
+        with open(csv_path, 'w', encoding='utf-8') as f:
+            f.write('id,name,score\n1,Alice,91\n2,Bob,88\n3,Charlie,95\n')
+        samples.append(csv_path)
+        tsv_path = os.path.join(self.session_dir, 'sample.tsv')
+        with open(tsv_path, 'w', encoding='utf-8') as f:
+            f.write('id\tcity\tzip\n1\tNY\t10001\n2\tSF\t94105\n')
+        samples.append(tsv_path)
+        txt_path = os.path.join(self.session_dir, 'sample.txt')
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write('This is a plain text sample file.')
+        samples.append(txt_path)
+        md_path = os.path.join(self.session_dir, 'sample.md')
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write('# Sample Markdown\n\n| id | name |\n|---|---|\n| 1 | Alice |\n| 2 | Bob |')
+        samples.append(md_path)
+        json_path = os.path.join(self.session_dir, 'sample.json')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump({"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]}, f, indent=2)
+        samples.append(json_path)
+        jsonl_path = os.path.join(self.session_dir, 'sample.jsonl')
+        with open(jsonl_path, 'w', encoding='utf-8') as f:
+            f.write('{"id":1,"val":10}\n{"id":2,"val":20}\n')
+        samples.append(jsonl_path)
+        py_path = os.path.join(self.session_dir, 'sample.py')
+        with open(py_path, 'w', encoding='utf-8') as f:
+            f.write('print("Hello from Python sample")\n')
+        samples.append(py_path)
+        r_path = os.path.join(self.session_dir, 'sample.R')
+        with open(r_path, 'w', encoding='utf-8') as f:
+            f.write('print("Hello from R sample")\n')
+        samples.append(r_path)
+        pdf_path = os.path.join(self.session_dir, 'sample.pdf')
+        try:
+            minimal_pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\n2 0 obj<<>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R>>endobj\n4 0 obj<</Length 55>>stream\nBT /F1 24 Tf 50 150 Td (Sample PDF Page) Tj ET\nendstream\nendobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n6 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n7 0 obj<</Type/Catalog/Pages 6 0 R>>endobj\nxref\n0 8\n0000000000 65535 f \n0000000010 00000 n \n0000000045 00000 n \n0000000068 00000 n \n0000000174 00000 n \n0000000321 00000 n \n0000000386 00000 n \n0000000447 00000 n \ntrailer<</Size 8/Root 7 0 R>>\nstartxref\n505\n%%EOF"
+            with open(pdf_path, 'wb') as f:
+                f.write(minimal_pdf)
+            samples.append(pdf_path)
+        except Exception:
+            pass
+        if pl and hasattr(pl.DataFrame({"a":[1]}), 'write_excel'):
+            xlsx_path = os.path.join(self.session_dir, 'sample.xlsx')
+            try:
+                pl.DataFrame({"id":[1,2],"name":["Alice","Bob"]}).write_excel(xlsx_path)
+                samples.append(xlsx_path)
+            except Exception:
+                pass
+        for p in samples:
+            try:
+                self.open_specific_file(p)
+            except Exception:
+                pass
+        QMessageBox.information(self, 'Samples', 'Sample files created and opened')
+
+    def open_specific_file(self, path):
+        try:
+            self.current_file = None
+            self.is_modified = False
+            self.update_title()
+            self.tab_widget.setCurrentWidget(self.new_tab())
+            self.open_file_path(path)
+        except Exception:
+            pass
+
+    def open_file_path(self, filename):
+        try:
+            editor = self.current_tab()
+            lower = filename.lower()
+            if lower.endswith(('.csv', '.tsv', '.txt')) and duckdb:
+                tmp = os.path.join(self.session_dir, f"duckdb_{os.path.basename(filename)}.txt")
+                os.makedirs(self.session_dir, exist_ok=True)
+                try:
+                    con = duckdb.connect()
+                    con.execute(f"COPY (SELECT * FROM read_csv_auto('{filename}')) TO '{tmp}' (DELIMITER '|', HEADER TRUE)")
+                    with open(tmp, 'r', encoding='utf-8', errors='replace') as f:
+                        editor.setPlainText(f.read())
+                except Exception:
+                    import csv
+                    with open(filename, 'r', encoding='utf-8', errors='replace', newline='') as fin, open(tmp, 'w', encoding='utf-8', newline='') as fout:
+                        sample = fin.read(4096)
+                        fin.seek(0)
+                        try:
+                            dialect = csv.Sniffer().sniff(sample)
+                        except Exception:
+                            dialect = csv.excel
+                        reader = csv.reader(fin, dialect)
+                        w = csv.writer(fout, delimiter='|')
+                        for row in reader:
+                            w.writerow(row)
+                    with open(tmp, 'r', encoding='utf-8', errors='replace') as f:
+                        editor.setPlainText(f.read())
+            elif lower.endswith(('.xlsx', '.xls')) and pl:
+                df = pl.read_excel(filename)
+                tmp = os.path.join(self.session_dir, f"polars_{os.path.basename(filename)}.txt")
+                os.makedirs(self.session_dir, exist_ok=True)
+                df.write_csv(tmp, separator='|')
+                with open(tmp, 'r', encoding='utf-8', errors='replace') as f:
+                    editor.setPlainText(f.read())
+            elif lower.endswith(('.json', '.ndjson', '.jsonl')):
+                with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+                    raw = f.read()
+                try:
+                    obj = json.loads(raw)
+                    editor.setPlainText(json.dumps(obj, indent=2, ensure_ascii=False))
+                except Exception:
+                    lines = []
+                    for line in raw.splitlines():
+                        try:
+                            lines.append(json.dumps(json.loads(line), indent=2, ensure_ascii=False))
+                        except Exception:
+                            lines.append(line)
+                    editor.setPlainText("\n".join(lines))
+            elif lower.endswith(('.pdf')) and PdfReader:
+                reader = PdfReader(filename)
+                pages = []
+                for p in reader.pages:
+                    pages.append(p.extract_text() or '')
+                editor.setPlainText("\n\n".join(pages))
+            else:
+                with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if lower.endswith(('.html', '.htm')):
+                    editor.setHtml(content)
+                else:
+                    editor.setPlainText(content)
+            if lower.endswith('.py') and hasattr(editor, 'setLanguage'):
+                editor.setLanguage('Python')
+            elif lower.endswith('.r') and hasattr(editor, 'setLanguage'):
+                editor.setLanguage('R')
+            elif lower.endswith('.md') and hasattr(editor, 'setLanguage'):
+                editor.setLanguage('Text')
+            self.tab_widget.setTabText(self.tab_widget.currentIndex(), os.path.basename(filename))
+        except Exception:
+            pass
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("Ultra Advanced Notepad++")
+    window = AdvancedNotepad()
+    window.show()
+    sys.exit(app.exec())
+
+if __name__ == '__main__':
+    main()
