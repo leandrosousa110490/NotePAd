@@ -1079,10 +1079,10 @@ class AdvancedNotepad(QMainWindow):
         # View Menu
         view_menu = menubar.addMenu("&View")
         
-        stay_on_top_action = QAction("Always on &Top", self)
-        stay_on_top_action.setCheckable(True)
-        stay_on_top_action.triggered.connect(self.toggle_always_on_top)
-        view_menu.addAction(stay_on_top_action)
+        self.stay_on_top_action = QAction("Always on &Top", self)
+        self.stay_on_top_action.setCheckable(True)
+        self.stay_on_top_action.triggered.connect(self.toggle_always_on_top)
+        view_menu.addAction(self.stay_on_top_action)
         
         fullscreen_action = QAction("&Fullscreen", self)
         fullscreen_action.setShortcut("F11")
@@ -1250,6 +1250,19 @@ class AdvancedNotepad(QMainWindow):
         run_sel_btn = QAction("▶ Run Selection", self)
         run_sel_btn.triggered.connect(self.run_selection)
         toolbar.addAction(run_sel_btn)
+        stay_on_top_btn = QAction("📌 On Top", self)
+        stay_on_top_btn.setCheckable(True)
+        def _top_clicked(checked):
+            try:
+                self.toggle_always_on_top(checked)
+                if hasattr(self, 'stay_on_top_action'):
+                    self.stay_on_top_action.setChecked(checked)
+            except Exception:
+                pass
+        stay_on_top_btn.triggered.connect(_top_clicked)
+        if hasattr(self, 'stay_on_top_action'):
+            self.stay_on_top_action.toggled.connect(stay_on_top_btn.setChecked)
+        toolbar.addAction(stay_on_top_btn)
         
     def text_changed(self):
         self.is_modified = True
