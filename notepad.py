@@ -1446,9 +1446,9 @@ class AdvancedNotepad(QMainWindow):
             return self.save_file_as()
     
     def save_file_as(self):
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Save File", "", 
-            "HTML Files (*.html);;Text Files (*.txt);;All Files (*.*)"
+        filename, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save File As", "", 
+            "Text Files (*.txt);;Markdown Files (*.md);;HTML Files (*.html);;PDF Files (*.pdf);;All Files (*.*)"
         )
         if filename:
             return self.save_to_file(filename)
@@ -1457,16 +1457,28 @@ class AdvancedNotepad(QMainWindow):
     def save_to_file(self, filename):
         try:
             text_edit = self.current_tab()
-            with open(filename, 'w', encoding='utf-8') as f:
-                if filename.lower().endswith('.html'):
-                    f.write(text_edit.toHtml())
-                else:
+            lower = filename.lower()
+            if lower.endswith('.pdf'):
+                printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+                printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+                printer.setOutputFileName(filename)
+                text_edit.document().print(printer)
+            elif lower.endswith('.html'):
+                html = text_edit.document().toHtml()
+                base = os.path.splitext(os.path.basename(filename))[0]
+                assets = os.path.join(os.path.dirname(filename), base + '_assets')
+                os.makedirs(assets, exist_ok=True)
+                html2 = self._rewrite_html_img_src_for_export(html, assets)
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(html2)
+            else:
+                with open(filename, 'w', encoding='utf-8') as f:
                     f.write(text_edit.toPlainText())
             self.current_file = filename
             self.is_modified = False
             self.tab_widget.setTabText(self.tab_widget.currentIndex(), os.path.basename(filename))
             self.update_title()
-            self.status_bar.showMessage("File saved successfully", 3000)
+            self.status_bar.showMessage("Saved", 3000)
             return True
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save file:\n{e}")
@@ -2131,6 +2143,91 @@ class AdvancedNotepad(QMainWindow):
                 QMessageBox.warning(self, 'Run', str(e))
         else:
             QMessageBox.information(self, 'Run', 'Select Python or R language')
+
+    def export_text(self):
+        editor = self.current_tab()
+        path, _ = QFileDialog.getSaveFileName(self, 'Export Text', '', 'Text Files (*.txt);;All Files (*.*)')
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(editor.toPlainText())
+            self.status_bar.showMessage('Exported to text', 3000)
+        except Exception as e:
+            QMessageBox.critical(self, 'Export', str(e))
+
+    def export_markdown(self):
+        editor = self.current_tab()
+        path, _ = QFileDialog.getSaveFileName(self, 'Export Markdown', '', 'Markdown Files (*.md);;All Files (*.*)')
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(editor.toPlainText())
+            self.status_bar.showMessage('Exported to markdown', 3000)
+        except Exception as e:
+            QMessageBox.critical(self, 'Export', str(e))
+
+    def export_html(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Export HTML', '', 'HTML Files (*.html);;All Files (*.*)')
+        if not path:
+            return
+        try:
+            html = self.current_tab().document().toHtml()
+            base = os.path.splitext(os.path.basename(path))[0]
+            assets = os.path.join(os.path.dirname(path), base + '_assets')
+            os.makedirs(assets, exist_ok=True)
+            html2 = self._rewrite_html_img_src_for_export(html, assets)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(html2)
+            self.status_bar.showMessage('Exported to HTML', 3000)
+        except Exception as e:
+            QMessageBox.critical(self, 'Export', str(e))
+
+    def export_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Export PDF', '', 'PDF Files (*.pdf);;All Files (*.*)')
+        if not path:
+            return
+        try:
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            printer.setOutputFileName(path)
+            self.current_tab().document().print(printer)
+            self.status_bar.showMessage('Exported to PDF', 3000)
+        except Exception as e:
+            QMessageBox.critical(self, 'Export', str(e))
+
+    def _rewrite_html_img_src_for_export(self, html, assets_dir):
+        try:
+            import re
+            from urllib.parse import urlparse, unquote
+            os.makedirs(assets_dir, exist_ok=True)
+            def repl(m):
+                src = m.group(1)
+                if src.startswith('data:'):
+                    return m.group(0)
+                p = src
+                try:
+                    u = urlparse(src)
+                    if u.scheme in ('file', ''):
+                        p = unquote(u.path) if u.scheme == 'file' else src
+                except Exception:
+                    p = src
+                if not os.path.isabs(p):
+                    p = src
+                if not os.path.exists(p):
+                    return m.group(0)
+                ext = os.path.splitext(p)[1] or '.png'
+                dest = os.path.join(assets_dir, f"img_{uuid.uuid4().hex}{ext}")
+                try:
+                    shutil.copy2(p, dest)
+                    rel = os.path.basename(dest)
+                    return f'src="{rel}"'
+                except Exception:
+                    return m.group(0)
+            return re.sub(r'src="([^"]+)"', repl, html)
+        except Exception:
+            return html
 
     def create_sample_files(self):
         os.makedirs(self.session_dir, exist_ok=True)
