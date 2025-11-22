@@ -5,12 +5,13 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QFileDialog,
                              QWidget, QMenuBar, QMenu, QToolBar, QStatusBar,
                              QInputDialog, QDialog, QDialogButtonBox, QSpinBox, 
                              QLabel, QHBoxLayout, QCheckBox, QLineEdit, QPushButton,
-                             QTabWidget, QPlainTextEdit, QComboBox, QSlider, QSplitter)
+                             QTabWidget, QPlainTextEdit, QComboBox, QSlider, QSplitter,
+                             QScrollArea)
 from PyQt6.QtGui import (QAction, QFont, QTextCursor, QTextCharFormat, 
                          QColor, QKeySequence, QTextTableFormat, QTextImageFormat,
                          QTextListFormat, QImage, QTextFrameFormat, QSyntaxHighlighter,
                          QTextDocument, QPalette, QTextBlockFormat, QTextLength,
-                         QTextTableCellFormat, QPainter, QTextFormat)
+                         QTextTableCellFormat, QPainter, QTextFormat, QPixmap)
 from PyQt6.QtCore import Qt, QSettings, QRegularExpression, QTimer, QDateTime, QRect, QSize, QProcess, QEvent
 from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 import re
@@ -717,6 +718,13 @@ class AdvancedNotepad(QMainWindow):
         self.auto_save_timer.timeout.connect(self.auto_save)
         self.auto_save_timer.start(60000)  # Auto-save every 60 seconds
         
+        self.capture_active = False
+        self.capture_timer = QTimer()
+        self.capture_timer.setInterval(2000)
+        self.capture_timer.timeout.connect(self._capture_tick)
+        self.captured_images = []
+        self._capture_filter_installed = False
+        
         self.update_status()
         
     def new_tab(self):
@@ -760,6 +768,11 @@ class AdvancedNotepad(QMainWindow):
                     if n:
                         self.tab_widget.setTabText(idx, n)
             return True
+        if getattr(self, 'capture_active', False) and event.type() == QEvent.Type.MouseButtonPress:
+            try:
+                self._capture_click()
+            except Exception:
+                pass
         return super().eventFilter(obj, event)
     def restore_session_or_default(self):
         if not self.restore_session():
@@ -1250,6 +1263,20 @@ class AdvancedNotepad(QMainWindow):
         run_sel_btn = QAction("▶ Run Selection", self)
         run_sel_btn.triggered.connect(self.run_selection)
         toolbar.addAction(run_sel_btn)
+        self.screen_combo = QComboBox()
+        self.screen_combo.addItem("All Screens")
+        for s in QApplication.screens():
+            self.screen_combo.addItem(s.name())
+        toolbar.addWidget(self.screen_combo)
+        start_rec_btn = QAction("⏺ Start", self)
+        start_rec_btn.triggered.connect(self.start_screen_recording)
+        toolbar.addAction(start_rec_btn)
+        stop_rec_btn = QAction("⏹ Stop", self)
+        stop_rec_btn.triggered.connect(self.stop_screen_recording)
+        toolbar.addAction(stop_rec_btn)
+        capture_now_btn = QAction("📷 Capture Now", self)
+        capture_now_btn.triggered.connect(self.capture_now)
+        toolbar.addAction(capture_now_btn)
         stay_on_top_btn = QAction("📌 On Top", self)
         stay_on_top_btn.setCheckable(True)
         def _top_clicked(checked):
@@ -1461,7 +1488,7 @@ class AdvancedNotepad(QMainWindow):
     def save_file_as(self):
         filename, selected_filter = QFileDialog.getSaveFileName(
             self, "Save File As", "", 
-            "Text Files (*.txt);;Markdown Files (*.md);;HTML Files (*.html);;PDF Files (*.pdf);;All Files (*.*)"
+            "Text Files (*.txt);;Markdown Files (*.md);;HTML Files (*.html);;PDF Files (*.pdf);;Word Files (*.docx);;All Files (*.*)"
         )
         if filename:
             return self.save_to_file(filename)
@@ -1484,6 +1511,16 @@ class AdvancedNotepad(QMainWindow):
                 html2 = self._rewrite_html_img_src_for_export(html, assets)
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(html2)
+            elif lower.endswith('.docx'):
+                try:
+                    import docx
+                    from docx.shared import Inches
+                except Exception:
+                    raise Exception('Microsoft Word export requires python-docx to be installed')
+                document = docx.Document()
+                html = text_edit.document().toHtml()
+                self._export_docx_from_html(document, html)
+                document.save(filename)
             else:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(text_edit.toPlainText())
@@ -1496,6 +1533,86 @@ class AdvancedNotepad(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save file:\n{e}")
             return False
+
+    def _export_docx_from_html(self, document, html):
+        try:
+            import re
+            from urllib.parse import urlparse, unquote
+            import io
+            import base64
+            def _resolve_img_src(src):
+                if src.startswith('data:'):
+                    return ('data', src)
+                try:
+                    u = urlparse(src)
+                    if u.scheme == 'file':
+                        p = unquote(u.path)
+                        if os.name == 'nt' and p.startswith('/') and len(p) > 3 and p[2] == ':':
+                            p = p.lstrip('/')
+                        return ('path', p)
+                    elif u.scheme in ('', None):
+                        return ('path', src)
+                except Exception:
+                    pass
+                return ('path', src)
+            def _add_picture(src):
+                kind, val = _resolve_img_src(src)
+                if kind == 'data':
+                    try:
+                        m = re.match(r'data:([^;]+);base64,(.+)', val)
+                        if m:
+                            data_b64 = m.group(2)
+                            buf = io.BytesIO()
+                            buf.write(base64.b64decode(data_b64))
+                            buf.seek(0)
+                            document.add_picture(buf)
+                            return True
+                    except Exception:
+                        return False
+                    return False
+                p = val
+                if not os.path.isabs(p):
+                    p = val
+                if os.path.exists(p):
+                    try:
+                        from docx.shared import Inches
+                        document.add_picture(p, width=Inches(6))
+                        return True
+                    except Exception:
+                        document.add_paragraph(f"[Image: {p}]")
+                        return True
+                return False
+            # Extract screenshot-like tables and images
+            tables = re.findall(r'<table[\s\S]*?</table>', html)
+            for t in tables:
+                imgs = re.findall(r'<img[^>]*src="([^"]+)"', t)
+                cells = re.findall(r'<td[\s\S]*?>([\s\S]*?)</td>', t)
+                notes_text = ''
+                if len(cells) >= 2:
+                    right = re.sub(r'<[^>]+>', '', cells[1])
+                    notes_text = re.sub(r'\s+', ' ', right).strip()
+                for src in imgs:
+                    ok = _add_picture(src)
+                    if ok:
+                        if notes_text:
+                            document.add_paragraph(notes_text)
+                        document.add_paragraph("")
+            # Remaining text content
+            html_no_tables = re.sub(r'<table[\s\S]*?</table>', '', html)
+            other_imgs = re.findall(r'<img[^>]*src="([^"]+)"', html_no_tables)
+            for src in other_imgs:
+                ok = _add_picture(src)
+                if ok:
+                    document.add_paragraph("")
+            text = re.sub(r'<br\s*/?>', '\n', html_no_tables)
+            text = re.sub(r'<[^>]+>', '', text)
+            lines = [l.strip() for l in text.splitlines()]
+            for l in lines:
+                if l:
+                    document.add_paragraph(l)
+        except Exception:
+            # Fallback: plain text
+            document.add_paragraph(re.sub(r'<[^>]+>', '', html))
     
     def auto_save(self):
         if self.is_modified and self.current_file:
@@ -1812,6 +1929,389 @@ class AdvancedNotepad(QMainWindow):
             if ok2 and url:
                 cursor = self.current_tab().textCursor()
                 cursor.insertHtml(f'<a href="{url}">{text}</a>')
+
+    def open_screen_capture(self):
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Capture Screens")
+            layout = QVBoxLayout(dlg)
+            screens = QApplication.screens()
+            for idx, s in enumerate(screens):
+                geo = s.geometry()
+                btn = QPushButton(f"Capture Screen {idx+1}: {s.name()} ({geo.width()}x{geo.height()})")
+                def make_cb(i):
+                    return lambda: (self.capture_screen_by_index(i), dlg.accept())
+                btn.clicked.connect(make_cb(idx))
+                layout.addWidget(btn)
+            all_btn = QPushButton("Capture All Screens")
+            all_btn.clicked.connect(lambda: (self.capture_all_screens(), dlg.accept()))
+            layout.addWidget(all_btn)
+            cancel_btn = QPushButton("Cancel")
+            cancel_btn.clicked.connect(dlg.reject)
+            layout.addWidget(cancel_btn)
+            dlg.exec()
+        except Exception:
+            pass
+
+    def capture_screen_by_index(self, idx):
+        try:
+            screens = QApplication.screens()
+            if 0 <= idx < len(screens):
+                s = screens[idx]
+                pix = s.grabWindow(0)
+                self._insert_screenshot_pixmap(pix)
+                self.status_bar.showMessage("Captured screen", 3000)
+        except Exception:
+            pass
+
+    def capture_all_screens(self):
+        try:
+            screens = QApplication.screens()
+            for s in screens:
+                pix = s.grabWindow(0)
+                self._insert_screenshot_pixmap(pix)
+            self.status_bar.showMessage("Captured all screens", 3000)
+        except Exception:
+            pass
+
+    def _insert_screenshot_pixmap(self, pixmap):
+        try:
+            os.makedirs(self.images_dir, exist_ok=True)
+            path = os.path.join(self.images_dir, f"screenshot_{uuid.uuid4().hex}.png")
+            pixmap.save(path, 'PNG')
+            editor = self.current_tab()
+            img = QImage(path)
+            view_w = editor.viewport().width()
+            max_img_w = int(max(300, view_w * 0.6))
+            disp_w = img.width()
+            if disp_w > max_img_w:
+                disp_w = max_img_w
+            disp_h = int(img.height() * (disp_w / img.width())) if img.width() else img.height()
+            cursor = editor.textCursor()
+            tf = QTextTableFormat()
+            tf.setBorder(1)
+            tf.setCellPadding(8)
+            tf.setCellSpacing(8)
+            tf.setColumnWidthConstraints([
+                QTextLength(QTextLength.PercentageLength, 62),
+                QTextLength(QTextLength.PercentageLength, 38)
+            ])
+            table = cursor.insertTable(1, 2, tf)
+            left = table.cellAt(0, 0).firstCursorPosition()
+            imgfmt = QTextImageFormat()
+            imgfmt.setName(path)
+            imgfmt.setWidth(disp_w)
+            imgfmt.setHeight(disp_h)
+            left.insertImage(imgfmt)
+            right = table.cellAt(0, 1).firstCursorPosition()
+            bold = QTextCharFormat()
+            bold.setFontWeight(QFont.Weight.Bold)
+            right.mergeCharFormat(bold)
+            right.insertText("Notes:\n")
+            normal = QTextCharFormat()
+            normal.setFontWeight(QFont.Weight.Normal)
+            right.mergeCharFormat(normal)
+            editor.ensureCursorVisible()
+        except Exception:
+            pass
+
+    def _insert_image_with_note(self, path, note, screen_name=None, ts=None):
+        try:
+            editor = self.current_tab()
+            img = QImage(path)
+            view_w = editor.viewport().width()
+            max_img_w = int(max(300, view_w * 0.6))
+            disp_w = img.width()
+            if disp_w > max_img_w:
+                disp_w = max_img_w
+            disp_h = int(img.height() * (disp_w / img.width())) if img.width() else img.height()
+            cursor = editor.textCursor()
+            try:
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                editor.setTextCursor(cursor)
+            except Exception:
+                pass
+            from PyQt6.QtCore import QUrl
+            url = QUrl.fromLocalFile(path).toString()
+            info = (note or "").strip()
+            if info:
+                info_html = info.replace('\n', '<br/>')
+                html = (
+                    f"<table style='border:1px solid #ccc;border-collapse:collapse;margin:8px 0;'>"
+                    f"<tr>"
+                    f"<td style='padding:8px;vertical-align:top;'>"
+                    f"<img src='{url}' width='{disp_w}' height='{disp_h}'/>"
+                    f"</td>"
+                    f"<td style='padding:8px;vertical-align:top;'>"
+                    f"<b>Notes:</b><br/>{info_html}"
+                    f"</td>"
+                    f"</tr>"
+                    f"</table><br/>"
+                )
+            else:
+                html = (
+                    f"<div style='margin:8px 0;'>"
+                    f"<img src='{url}' width='{disp_w}' height='{disp_h}'/>"
+                    f"</div><br/>"
+                )
+            cursor.insertHtml(html)
+            editor.ensureCursorVisible()
+            try:
+                self.status_bar.showMessage("Inserted image", 2000)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _insert_header_note(self, note):
+        try:
+            editor = self.current_tab()
+            cursor = editor.textCursor()
+            try:
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                editor.setTextCursor(cursor)
+            except Exception:
+                pass
+            info = (note or "").strip()
+            if info:
+                info_html = info.replace('\n', '<br/>')
+                html = (
+                    f"<div style='margin:8px 0;'>"
+                    f"<b>Notes:</b><br/>{info_html}"
+                    f"</div><br/>"
+                )
+                cursor.insertHtml(html)
+                editor.ensureCursorVisible()
+                try:
+                    self.status_bar.showMessage("Inserted note", 2000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def capture_now(self):
+        try:
+            choice = self.screen_combo.currentText() if hasattr(self, 'screen_combo') else "All Screens"
+            now = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+            if choice == "All Screens":
+                for s in QApplication.screens():
+                    pix = s.grabWindow(0)
+                    os.makedirs(self.images_dir, exist_ok=True)
+                    path = os.path.join(self.images_dir, f"screencap_{uuid.uuid4().hex}.png")
+                    pix.save(path, 'PNG')
+                    self.captured_images.append({"path": path, "screen": s.name(), "time": now})
+                    self._insert_image_with_note(path, "", s.name(), now)
+            else:
+                target = None
+                for s in QApplication.screens():
+                    if s.name() == choice:
+                        target = s
+                        break
+                if target:
+                    pix = target.grabWindow(0)
+                    os.makedirs(self.images_dir, exist_ok=True)
+                    path = os.path.join(self.images_dir, f"screencap_{uuid.uuid4().hex}.png")
+                    pix.save(path, 'PNG')
+                    self.captured_images.append({"path": path, "screen": target.name(), "time": now})
+                    self._insert_image_with_note(path, "", target.name(), now)
+            self.status_bar.showMessage("Captured", 1500)
+        except Exception:
+            pass
+
+    def start_screen_recording(self):
+        try:
+            self.captured_images = []
+            self.capture_active = True
+            self.capture_timer.start()
+            if not self._capture_filter_installed:
+                QApplication.instance().installEventFilter(self)
+                self._capture_filter_installed = True
+            self.status_bar.showMessage("Recording screens", 2000)
+        except Exception:
+            pass
+
+    def stop_screen_recording(self):
+        try:
+            self.capture_timer.stop()
+            self.capture_active = False
+            if not self.captured_images:
+                return
+            if self._capture_filter_installed:
+                try:
+                    QApplication.instance().removeEventFilter(self)
+                except Exception:
+                    pass
+                self._capture_filter_installed = False
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Insert Captures")
+            dlg.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+            dlg.setSizeGripEnabled(True)
+            v = QVBoxLayout(dlg)
+            select_all = QCheckBox("Select All")
+            v.addWidget(select_all)
+            scroll = QScrollArea(dlg)
+            scroll.setWidgetResizable(True)
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            scroll.setWidget(container)
+            v.addWidget(scroll)
+            checks = []
+            rows = []
+            def open_preview(d, comm_widget):
+                ndlg = QDialog(self)
+                ndlg.setWindowTitle("Preview")
+                ndlg.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+                ndlg.setSizeGripEnabled(True)
+                lay = QVBoxLayout(ndlg)
+                img_label = QLabel()
+                pm2 = QPixmap(d.get('path'))
+                if not pm2.isNull():
+                    ww = max(500, int(self.width() * 0.7))
+                    hh = int(pm2.height() * (ww / pm2.width())) if pm2.width() else pm2.height()
+                    img_label.setPixmap(pm2.scaled(ww, hh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                lay.addWidget(img_label)
+                comment_label = QLabel("Comment for this image:")
+                lay.addWidget(comment_label)
+                comment_edit = QPlainTextEdit()
+                comment_edit.setPlainText(comm_widget.text())
+                lay.addWidget(comment_edit)
+                btns2 = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+                lay.addWidget(btns2)
+                def on_ok2():
+                    note = comment_edit.toPlainText().strip()
+                    comm_widget.setText(note)
+                    self._insert_image_with_note(d.get('path'), note, d.get('screen'), d.get('time'))
+                    ndlg.accept()
+                btns2.accepted.connect(on_ok2)
+                btns2.rejected.connect(ndlg.reject)
+                ndlg.exec()
+            for item in list(self.captured_images):
+                row_widget = QWidget()
+                row = QHBoxLayout(row_widget)
+                thumb = QLabel()
+                pm = QPixmap(item.get('path'))
+                if not pm.isNull():
+                    w = 180
+                    h = int(pm.height() * (w / pm.width())) if pm.width() else pm.height()
+                    thumb.setPixmap(pm.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+                cb = QCheckBox(f"{item.get('screen')} @ {item.get('time')}")
+                cb.setChecked(True)
+                cb.item_data = item
+                checks.append(cb)
+                preview_btn = QPushButton("Preview")
+                delete_btn = QPushButton("Delete")
+                comm = QLineEdit()
+                comm.setPlaceholderText("Comment")
+                def on_preview():
+                    open_preview(item, comm)
+                preview_btn.clicked.connect(on_preview)
+                def on_thumb_click(event):
+                    open_preview(item, comm)
+                thumb.mousePressEvent = on_thumb_click
+                def on_delete():
+                    try:
+                        # remove from captured list
+                        self.captured_images = [x for x in self.captured_images if x.get('path') != item.get('path')]
+                        # remove checkbox
+                        if cb in checks:
+                            checks.remove(cb)
+                        row_widget.setParent(None)
+                    except Exception:
+                        pass
+                delete_btn.clicked.connect(on_delete)
+                row.addWidget(thumb)
+                row.addWidget(cb)
+                row.addWidget(preview_btn)
+                row.addWidget(delete_btn)
+                row.addWidget(comm)
+                rows.append((cb, comm))
+                container_layout.addWidget(row_widget)
+            note_label = QLabel("Comment:")
+            v.addWidget(note_label)
+            note_edit = QPlainTextEdit()
+            try:
+                note_edit.setFixedHeight(60)
+            except Exception:
+                pass
+            v.addWidget(note_edit)
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            v.addWidget(btns)
+            def on_select_all(t):
+                for c in checks:
+                    c.setChecked(t)
+            select_all.toggled.connect(on_select_all)
+            def on_ok():
+                note = note_edit.toPlainText().strip()
+                if note:
+                    self._insert_header_note(note)
+                for c, comm in rows:
+                    if c.isChecked():
+                        d = c.item_data
+                        note_to_use = comm.text().strip()
+                        self._insert_image_with_note(d.get('path'), note_to_use, d.get('screen'), d.get('time'))
+                dlg.accept()
+            btns.accepted.connect(on_ok)
+            btns.rejected.connect(dlg.reject)
+            dlg.exec()
+        except Exception:
+            pass
+
+    def _capture_tick(self):
+        try:
+            choice = self.screen_combo.currentText() if hasattr(self, 'screen_combo') else "All Screens"
+            now = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+            if choice == "All Screens":
+                for s in QApplication.screens():
+                    pix = s.grabWindow(0)
+                    os.makedirs(self.images_dir, exist_ok=True)
+                    path = os.path.join(self.images_dir, f"screencap_{uuid.uuid4().hex}.png")
+                    pix.save(path, 'PNG')
+                    self.captured_images.append({"path": path, "screen": s.name(), "time": now})
+            else:
+                target = None
+                for s in QApplication.screens():
+                    if s.name() == choice:
+                        target = s
+                        break
+                if target:
+                    pix = target.grabWindow(0)
+                    os.makedirs(self.images_dir, exist_ok=True)
+                    path = os.path.join(self.images_dir, f"screencap_{uuid.uuid4().hex}.png")
+                    pix.save(path, 'PNG')
+                    self.captured_images.append({"path": path, "screen": target.name(), "time": now})
+        except Exception:
+            pass
+
+    def _capture_click(self):
+        try:
+            choice = self.screen_combo.currentText() if hasattr(self, 'screen_combo') else "All Screens"
+            now = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+            if choice == "All Screens":
+                for s in QApplication.screens():
+                    pix = s.grabWindow(0)
+                    os.makedirs(self.images_dir, exist_ok=True)
+                    path = os.path.join(self.images_dir, f"screencap_{uuid.uuid4().hex}.png")
+                    pix.save(path, 'PNG')
+                    self.captured_images.append({"path": path, "screen": s.name(), "time": now})
+            else:
+                target = None
+                for s in QApplication.screens():
+                    if s.name() == choice:
+                        target = s
+                        break
+                if target:
+                    pix = target.grabWindow(0)
+                    os.makedirs(self.images_dir, exist_ok=True)
+                    path = os.path.join(self.images_dir, f"screencap_{uuid.uuid4().hex}.png")
+                    pix.save(path, 'PNG')
+                    self.captured_images.append({"path": path, "screen": target.name(), "time": now})
+            try:
+                self.status_bar.showMessage("Captured", 1000)
+            except Exception:
+                pass
+        except Exception:
+            pass
         
     def toggle_always_on_top(self, checked):
         if checked:
